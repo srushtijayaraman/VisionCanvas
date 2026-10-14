@@ -57,14 +57,10 @@ class ModernUI:
     TOOLS = [
         "Brush",
         "Eraser",
-        "Fill",
-        "Shape",
-        "Text (AI)",
-        "Zoom",
-        "Hand",
+        "Smart Ink",
     ]
 
-    MODES = ["Draw", "Select", "Erase", "Move"]
+    MODES = ["Draw", "Select", "Smart Ink", "Move"]
 
     GESTURE_GUIDE = [
         ("Draw", "Index Finger"),
@@ -74,7 +70,7 @@ class ModernUI:
         ("Save", "Thumbs Up"),
     ]
 
-    BRUSH_NAMES = ["Hard", "Soft", "Neon", "Pencil", "Water", "Custom"]
+    BRUSH_NAMES = ["Hard", "Soft", "Neon", "Pencil", "Water"]
 
     # MediaPipe hand skeleton connections
     HAND_CONNECTIONS = [
@@ -137,6 +133,11 @@ class ModernUI:
 
         # Positions populated by _render_base
         self._color_centers = []
+        self._tool_rects = []
+        self._brush_preset_rects = []
+        self._action_rects = []
+        self._status_msg = ""
+        self._status_expires = 0.0
 
         # Pre-render static parts
         self._base = self._render_base()
@@ -265,6 +266,33 @@ class ModernUI:
                     
         return changed
 
+    def handle_tool_click(self, cursor_x, cursor_y):
+        """Check if cursor is over a tool button. Returns tool index or None."""
+        for x1, y1, x2, y2, idx in getattr(self, '_tool_rects', []):
+            if x1 <= cursor_x <= x2 and y1 <= cursor_y <= y2:
+                return idx
+        return None
+
+    def handle_brush_preset_click(self, cursor_x, cursor_y):
+        """Check if cursor is over a brush preset button. Returns brush index or None."""
+        for x1, y1, x2, y2, idx in getattr(self, '_brush_preset_rects', []):
+            if x1 <= cursor_x <= x2 and y1 <= cursor_y <= y2:
+                return idx
+        return None
+
+    def handle_action_click(self, cursor_x, cursor_y):
+        """Check if cursor is over an action button (Clear, Undo, Redo, Save, Export)."""
+        for x1, y1, x2, y2, action in getattr(self, '_action_rects', []):
+            if x1 <= cursor_x <= x2 and y1 <= cursor_y <= y2:
+                return action
+        return None
+
+    def set_status_message(self, message: str, duration: float = 2.5):
+        """Set a user-visible feedback message shown in a banner for *duration* seconds."""
+        import time
+        self._status_msg = str(message)
+        self._status_expires = time.time() + float(duration)
+
     def ui_to_canvas(self, ui_x, ui_y):
         """Convert a UI screen coordinate to camera/canvas coordinate."""
         if self.video_x <= ui_x <= self.video_x + self.disp_w and self.video_y <= ui_y <= self.video_y + self.disp_h:
@@ -353,8 +381,10 @@ class ModernUI:
         d.text((lp_x1 + 16, ty), "TOOLS", fill=self.TEXT_DIM, font=font_sm)
         ty += 22
 
+        self._tool_rects = []
         for i, tool_name in enumerate(self.TOOLS):
             tool_y = ty + i * 32
+            self._tool_rects.append((lp_x1 + 8, tool_y - 2, lp_x2 - 8, tool_y + 24, i))
             
             icon_color = (255, 255, 255) if i == self.active_tool else self.TEXT_DIM
             text_color = (255, 255, 255) if i == self.active_tool else self.TEXT_SECONDARY
@@ -372,22 +402,8 @@ class ModernUI:
             elif tool_name == "Eraser":
                 d.rectangle([(ix, iy+4), (ix+12, iy+10)], outline=icon_color, width=1)
                 d.line([(ix+8, iy+4), (ix+8, iy+10)], fill=icon_color, width=1)
-            elif tool_name == "Fill":
-                d.polygon([(ix, iy+10), (ix+4, iy+4), (ix+12, iy+8), (ix+8, iy+14)], outline=icon_color)
-                d.line([(ix+6, iy+12), (ix+6, iy+14)], fill=icon_color, width=1)
-            elif tool_name == "Shape":
-                d.ellipse([(ix, iy+2), (ix+10, iy+12)], outline=icon_color, width=1)
-                d.rectangle([(ix+4, iy+6), (ix+14, iy+16)], outline=icon_color, width=1)
-            elif tool_name == "Text (AI)":
-                d.line([(ix+2, iy+2), (ix+12, iy+2)], fill=icon_color, width=2)
-                d.line([(ix+7, iy+2), (ix+7, iy+12)], fill=icon_color, width=2)
-                d.line([(ix+5, iy+12), (ix+9, iy+12)], fill=icon_color, width=1)
-            elif tool_name == "Zoom":
-                d.ellipse([(ix, iy), (ix+8, iy+8)], outline=icon_color, width=1)
-                d.line([(ix+7, iy+7), (ix+12, iy+12)], fill=icon_color, width=2)
-            elif tool_name == "Hand":
-                d.rectangle([(ix+4, iy+4), (ix+10, iy+12)], outline=icon_color, width=1)
-                d.line([(ix+4, iy+6), (ix+2, iy+6), (ix+2, iy+12), (ix+4, iy+12)], fill=icon_color, width=1)
+            elif tool_name == "Smart Ink":
+                d.polygon([(ix+6, iy+1), (ix+12, iy+6), (ix+9, iy+13), (ix+3, iy+13), (ix, iy+6)], outline=icon_color)
 
         # Brush Presets
         bp_y = ty + len(self.TOOLS) * 32 + 12
@@ -403,13 +419,14 @@ class ModernUI:
             ((255, 120, 255), 2, "solid"),     # Neon
             ((180, 180, 200), 1, "solid"),     # Pencil
             ((130, 160, 200), 4, "wavy"),      # Water
-            ((100, 100, 120), 2, "dotted"),    # Custom
         ]
+        self._brush_preset_rects = []
         for i, bname in enumerate(self.BRUSH_NAMES):
             row = i // cols
             col = i % cols
             bx = lp_x1 + 12 + col * (cell + gap)
             by = bp_y + row * (cell + gap)
+            self._brush_preset_rects.append((bx, by, bx + cell, by + cell, i))
             outline_c = self.ACCENT if i == self.active_brush else self.PANEL_BORDER
             d.rounded_rectangle([bx, by, bx + cell, by + cell], radius=8,
                                 fill=(22, 22, 36), outline=outline_c)
@@ -549,9 +566,11 @@ class ModernUI:
         # Action buttons
         actions = [("Clear", "C"), ("Undo", "U"), ("Redo", "R")]
         act_start = self.width // 2 - 150
+        self._action_rects = []
         for j, (label, key) in enumerate(actions):
             ax = act_start + j * 75
             ay = bb_y1 + 6
+            self._action_rects.append((ax, ay, ax + 60, ay + 36, label.upper()))
             d.rounded_rectangle([ax, ay, ax + 60, ay + 36], radius=10,
                                 fill=(22, 22, 36), outline=self.PANEL_BORDER)
             d.text((ax + 22, ay + 4), key, fill=self.TEXT_PRIMARY, font=font_lg)
@@ -568,6 +587,7 @@ class ModernUI:
         for j, label in enumerate(["Save", "Export"]):
             ax = tk_x + 50 + j * 75
             ay = bb_y1 + 6
+            self._action_rects.append((ax, ay, ax + 60, ay + 36, label.upper()))
             d.rounded_rectangle([ax, ay, ax + 60, ay + 36], radius=10,
                                 fill=(22, 22, 36), outline=self.PANEL_BORDER)
             d.text((ax + 10, ay + 4), label[0], fill=self.TEXT_PRIMARY, font=font_lg)
@@ -646,7 +666,8 @@ class ModernUI:
     # ── Dynamic rendering (per frame) ───────────────────────────
 
     def render(self, frame, canvas_frame, cursor_x, cursor_y, gesture,
-              landmarks=None):
+              landmarks=None, canvas_mask=None, stats=None):
+        import time
         ui = self._base.copy()
 
         # Resize frames to display size
@@ -664,8 +685,15 @@ class ModernUI:
         else:
             disp_canvas = canvas_frame
 
-        gray = cv2.cvtColor(disp_canvas, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+        if canvas_mask is not None:
+            if (canvas_mask.shape[1] != self.disp_w or canvas_mask.shape[0] != self.disp_h):
+                mask = cv2.resize(canvas_mask, (self.disp_w, self.disp_h), interpolation=cv2.INTER_NEAREST)
+            else:
+                mask = canvas_mask
+        else:
+            gray = cv2.cvtColor(disp_canvas, cv2.COLOR_BGR2GRAY)
+            _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+
         mask_inv = cv2.bitwise_not(mask)
 
         frame_bg = cv2.bitwise_and(disp_frame, disp_frame, mask=mask_inv)
@@ -746,8 +774,32 @@ class ModernUI:
                 cv2.circle(ui, (cursor_x, cursor_y), 3,
                            (255, 255, 255), cv2.FILLED, cv2.LINE_AA)
 
-        # ── Active gesture status on top bar ────────────────────
-        cv2.putText(ui, f"Active: {gesture}", (self.left_w + 30, self.top_h),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, self.NEON_CYAN, 1, cv2.LINE_AA)
+        # ── Status Feedback Banner ──────────────────────────────
+        if self._status_msg and time.time() < self._status_expires:
+            msg_text = self._status_msg
+            banner_y = vy + 10
+            banner_w = min(self.disp_w - 20, len(msg_text) * 9 + 40)
+            banner_x = vx + (self.disp_w - banner_w) // 2
+            cv2.rectangle(ui, (banner_x, banner_y), (banner_x + banner_w, banner_y + 28),
+                          (20, 20, 32), cv2.FILLED)
+            cv2.rectangle(ui, (banner_x, banner_y), (banner_x + banner_w, banner_y + 28),
+                          self.ACCENT, 1)
+            cv2.putText(ui, msg_text, (banner_x + 16, banner_y + 19),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, self.ACCENT_GLOW, 1, cv2.LINE_AA)
+
+        # ── Diagnostics Overlay ─────────────────────────────────
+        if stats:
+            dy = vy + 38
+            dx = vx + 12
+            cv2.rectangle(ui, (dx - 4, dy - 14), (dx + 230, dy + 56), (14, 14, 24), cv2.FILLED)
+            cv2.rectangle(ui, (dx - 4, dy - 14), (dx + 230, dy + 56), self.PANEL_BORDER, 1)
+            cv2.putText(ui, f"Render FPS: {stats.get('render_fps', 0):.1f}", (dx, dy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 120), 1, cv2.LINE_AA)
+            cv2.putText(ui, f"Inference FPS: {stats.get('inference_fps', 0):.1f}", (dx, dy + 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 220, 255), 1, cv2.LINE_AA)
+            cv2.putText(ui, f"Inference Latency: {stats.get('inf_ms', 0):.1f}ms", (dx, dy + 32),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, self.TEXT_PRIMARY, 1, cv2.LINE_AA)
+            cv2.putText(ui, f"Tracking: {stats.get('tracking', 'Active')}", (dx, dy + 48),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, self.ACCENT_GLOW, 1, cv2.LINE_AA)
 
         return ui
