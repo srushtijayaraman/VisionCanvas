@@ -1,6 +1,18 @@
-import cv2
+"""Threaded webcam capture that continuously grabs the latest video frame."""
+
 import threading
-from src.config import CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_BUFFER_SIZE
+import time
+from typing import Optional
+
+import cv2
+import numpy as np
+
+from src.config import (
+    CAMERA_BUFFER_SIZE,
+    CAMERA_HEIGHT,
+    CAMERA_INDEX,
+    CAMERA_WIDTH,
+)
 
 
 class Webcam:
@@ -12,9 +24,17 @@ class Webcam:
     """
 
     def __init__(self, camera_index: int = CAMERA_INDEX):
+        self.camera_index = camera_index
         self.cap = cv2.VideoCapture(camera_index)
-        if not self.cap.isOpened():
-            raise RuntimeError("Could not open webcam.")
+        self.is_opened = self.cap.isOpened()
+
+        if not self.is_opened:
+            # Note: Do not crash immediately so applications or tests can detect failure gracefully
+            self._running = False
+            self._thread = None
+            self._latest_frame = None
+            self._lock = threading.Lock()
+            return
 
         # Set resolution
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
@@ -25,7 +45,7 @@ class Webcam:
 
         # Threaded capture state
         self._lock = threading.Lock()
-        self._latest_frame = None
+        self._latest_frame: Optional[np.ndarray] = None
         self._running = True
 
         # Read first frame synchronously so we have something immediately
@@ -44,20 +64,28 @@ class Webcam:
             if success:
                 with self._lock:
                     self._latest_frame = frame
+            else:
+                # Sleep briefly on read failure to avoid busy-wait spinning at 100% CPU
+                time.sleep(0.01)
 
-    def get_frame(self):
+    def get_frame(self) -> Optional[np.ndarray]:
         """Return the most recent frame (never blocks on camera I/O).
 
-        NOTE: The frame is NOT flipped here. main.py handles the flip
-        so there is no double-flip.
+        NOTE: The frame is NOT flipped here. Caller handles flip.
         """
+        if not self.is_opened:
+            return None
+
         with self._lock:
             if self._latest_frame is None:
                 return None
             return self._latest_frame.copy()
 
-    def release(self):
+    def release(self) -> None:
+        """Stop background worker and release OpenCV video capture device."""
         self._running = False
-        if self._thread.is_alive():
-            self._thread.join(timeout=2.0)
-        self.cap.release()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+        if self.cap is not None:
+            self.cap.release()
+            self.is_opened = False
