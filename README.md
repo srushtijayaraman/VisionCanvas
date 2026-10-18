@@ -1,146 +1,200 @@
-# VisionCanvas 2.0 🎨🖐️
+# VisionCanvas
 
-VisionCanvas is a real-time, gesture-controlled virtual drawing application powered by **OpenCV**, **MediaPipe**, and **NumPy**. Draw, sketch, erase, select colors, and automatically convert hand-drawn shapes into crisp geometric primitives in the air using natural hand gestures through your webcam.
+> **Real-time, gesture-controlled digital drawing powered by Python, OpenCV, and MediaPipe — turn hand movements into art.**
+
+[![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![OpenCV](https://img.shields.io/badge/OpenCV-4.8%2B-5C3EE8.svg?logo=opencv&logoColor=white)](https://opencv.org/)
+[![MediaPipe](https://img.shields.io/badge/MediaPipe-HandLandmarker-00897B.svg?logo=google&logoColor=white)](https://developers.google.com/mediapipe)
+[![Local Tests](https://img.shields.io/badge/Local%20Tests-50%20Passed%20(pytest)-brightgreen.svg?logo=pytest&logoColor=white)](tests/)
+[![Architecture](https://img.shields.io/badge/Documentation-Architecture%20Spec-orange.svg)](docs/ARCHITECTURE.md)
 
 ---
 
-## ✨ Features
+## 📌 Overview
 
-- **Real-Time Hand Tracking & Gesture Control:** Powered by MediaPipe's HandLandmarker model running asynchronously in video mode to deliver low-latency tracking.
-- **Gesture State Machine & Temporal Debounce:** Strict state-transition logic distinguishes continuous interactions (drawing, selecting) from discrete one-shot commands (`UNDO`, `REDO`, `SAVE`, `CLEAR`), preventing sustained poses from firing repeated commands.
-- **Adaptive Virtual Cursor with Outlier Recovery:** Dual-axis **One Euro Filter** smoothing reduces hand jitter at low velocities while remaining responsive during rapid movement. Automatic outlier recovery prevents the cursor from freezing after large hand movements or re-entry.
-- **Smart Ink Geometric Shape Recognizer:** Draw rough shapes in the air (lines, circles, rectangles, triangles); VisionCanvas automatically detects the geometry and replaces the rough stroke with a clean mathematical shape, with automatic freehand fallback for low-confidence or arbitrary sketches.
-- **5 Expressive Brush Presets:**
-  1. **Hard Brush:** Solid, anti-aliased clean lines.
-  2. **Soft Brush:** Gaussian-blurred airbrush effect using localized ROI processing.
-  3. **Neon Brush:** Multi-layer luminous glow with alpha blending.
-  4. **Pencil Brush:** Semi-transparent, fine sketch pencil stroke.
-  5. **Watercolor Brush:** Textured, organic wet watercolor stroke with thickness jitter.
-- **True Alpha-Masked Canvas & Export:** Separate 8-bit alpha mask preserves dark marks, black pencil sketches, and subtle shading over the camera feed. Exports clean white-background drawings or transparent PNGs (`output/`).
-- **Interactive Glassmorphic UI:** Control application state using both in-air gesture pointing (`SELECT` mode) and mouse clicks on tools, brush presets, the color palette, the color wheel, the brush size slider, and bottom action buttons.
-- **Diagnostics Mode:** Real-time on-screen telemetry reporting separate Render FPS, Inference FPS, inference latency, and tracking status.
+**VisionCanvas** is an interactive desktop computer-vision application that transforms your webcam into an air-drawing studio. By tracking 21 3D hand landmarks in real time, VisionCanvas lets you sketch, erase, select colors, and automatically convert freehand doodles into mathematical geometric shapes — all without touching a keyboard or mouse.
+
+Built on an asynchronous computer-vision pipeline, VisionCanvas bridges human gestures and digital canvas rendering using explainable heuristics, adaptive signal filtering (One Euro Filter), and a glassmorphic interface compositor.
+
+---
+
+## ✨ Verified Features
+
+### 🖐️ Computer Vision & Gesture Recognition
+- **Real-Time Hand Tracking:** Powered by Google's MediaPipe `HandLandmarker` model running asynchronously in `VIDEO` mode with monotonic timestamping and latency measurement.
+- **Rotation-Invariant Finger Classification:** Evaluates Euclidean distance ratios between the wrist, PIP joints, and fingertips ($d_{\text{wrist-tip}} / d_{\text{wrist-pip}}$). The classification works reliably across 360° of in-plane hand tilt.
+- **Temporal Gesture State Machine:** Implements a 2-frame stability window to eliminate transitional noise, paired with one-shot command latching and a $0.4\text{s}$ cooldown to prevent continuous repetition of discrete commands (`UNDO`, `REDO`, `SAVE`, `CLEAR`).
+
+### 🎯 Adaptive Virtual Cursor
+- **One Euro Filter Smoothing:** Adaptive first-order low-pass filter dynamically tunes cutoff frequency based on movement velocity. Hand jitter is virtually eliminated during slow, precise drawing, while lag is suppressed during swift strokes.
+- **Outlier Jump Rejection & Rapid Recovery:** Distinguishes isolated single-frame camera tracking glitches (holding position) from deliberate rapid hand movements ($\ge 3$ consecutive frames), reinitializing filter state without freezing the cursor.
+
+### 🖌️ Expressive Brush Engines
+- **Hard Brush:** Crisp, solid, anti-aliased strokes with linear point interpolation.
+- **Soft Brush:** Localized region-of-interest (ROI) Gaussian-blurred airbrush effect.
+- **Neon Brush:** Multi-layer radiant glow created through concentric alpha-blended halos.
+- **Pencil Brush:** Fine-tip, semi-transparent sketch stroke with natural density accumulation.
+- **Watercolor Brush:** Organic textured stroke featuring continuous thickness jitter.
+
+### 📐 Smart Ink (Geometric Primitive Recognition)
+- Converts rough air-sketched paths into crisp mathematical shapes in real time.
+- Supported shapes: **Straight Lines**, **Circles**, **Rectangles**, and **Triangles**.
+- Evaluates path arc length, chord distance, closure ratio, and Douglas-Peucker contour simplification.
+- **Zero Data-Loss Fallback:** Strokes with confidence $< 65\%$ or irregular sketches (e.g., complex illustrations or handwriting) automatically fall back to the user's freehand stroke.
+
+### 🎨 Canvas & Color Management
+- **True Dual-Layer Alpha Masking:** A dedicated 8-bit alpha mask (`self.mask`) separates drawing marks from camera pixels, ensuring black pencil strokes and dark colors remain 100% visible over camera feeds.
+- **Interactive Color Palette & Hue Wheel:** Full 130px circular hue wheel, inner 56px Saturation/Value gradient square, vertical hue bar, and 10 curated preset swatches.
+- **Undo / Redo History:** Snapshot-based history stack (up to 25 states) for rapid correction.
+- **High-Resolution Export:** One-click export to `output/` as high-contrast white-background drawings or transparent PNGs.
+
+### 📊 Live Diagnostics HUD
+- Press `d` to toggle an on-screen telemetry heads-up display showing Render FPS, Inference FPS, MediaPipe latency in milliseconds, and tracking state.
+
+---
+
+## 🏗️ System Architecture & Data Flow
+
+VisionCanvas utilizes a decoupled, non-blocking pipeline where camera capture, neural inference, and canvas compositing operate seamlessly:
+
+```mermaid
+flowchart TD
+    subgraph Input ["Camera & Neural Tracking"]
+        A["Webcam Capture\n(Background Thread)"] -->|"BGR Frame"| B["HandDetector\n(MediaPipe Landmarker)"]
+        B -->|"21 3D Landmarks"| C["FingerDetector\n(Rotation-Invariant Ratios)"]
+    end
+
+    subgraph Gestures ["Gesture & Cursor Engine"]
+        C -->|"Binary Finger States"| D["GestureRecognizer\n(Pose Mapping)"]
+        D -->|"Raw Gesture"| E["GestureStateMachine\n(Debounce & One-Shot Latch)"]
+        B -->|"Index Tip Coordinates"| F["VirtualCursor\n(One Euro Filter + Outlier Gate)"]
+    end
+
+    subgraph CanvasCore ["Drawing & Geometry Engine"]
+        E -->|"DRAW Gesture"| G["DrawingCanvas\n(BGR Buffer + Alpha Mask)"]
+        F -->|"Smoothed (X, Y)"| G
+        G -->|"Stroke Points"| H["GeometryRecognizer\n(Smart Ink Engine)"]
+        H -->|"Refined Geometric Primitives"| G
+    end
+
+    subgraph UI ["Glassmorphic Presentation"]
+        A -->|"Raw Feed"| I["ModernUI Compositor"]
+        G -->|"Composed Canvas & Mask"| I
+        E -->|"Active State"| I
+        I -->|"Rendered 720p Frame"| J["OpenCV Display Window"]
+    end
+```
+
+For comprehensive mathematical proofs, algorithm benchmarks, and data schemas, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+---
+
+## 🛠️ Tech Stack
+
+| Technology | Role in VisionCanvas |
+| :--- | :--- |
+| **Python 3.10+** | Core runtime (reference environment verified on Python 3.13.2) |
+| **OpenCV (`opencv-contrib-python`)** | Camera I/O, canvas rasterization, alpha blending, image export |
+| **MediaPipe (`mediapipe`)** | High-performance 21-landmark 3D hand tracking in video stream mode |
+| **NumPy (`numpy`)** | Vectorized image matrix operations, distance calculations, filter mathematics |
+| **Pillow (`pillow`)** | Anti-aliased typography and glassmorphic UI label rendering |
+| **Pytest (`pytest`)** | Unit testing, integration testing, and performance micro-benchmarks |
 
 ---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
+- Python **3.10+** (verified and tested locally on Python 3.13.2)
+- Built-in or external USB webcam
+- **Operating System:** Windows 10/11 (verified primary platform); macOS and Linux are supported by dependencies but currently unverified on physical hardware
 
-- Python 3.10+ (tested on Python 3.13)
-- Working webcam (USB or built-in)
-- MediaPipe Hand Landmarker model (`src/hand_tracking/hand_landmarker.task`, included in repository)
+---
 
 ### Installation
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/Shashwat2506/VisionCanvas.git
+   git clone https://github.com/srushtijayaraman/VisionCanvas.git
    cd VisionCanvas
    ```
 
 2. **Create and activate a virtual environment:**
-   ```bash
+
+   **Windows (PowerShell):**
+   ```powershell
    python -m venv .venv
-
-   # Windows (PowerShell):
    .\.venv\Scripts\Activate.ps1
+   ```
 
-   # Windows (cmd):
+   **Windows (Command Prompt):**
+   ```cmd
+   python -m venv .venv
    .\.venv\Scripts\activate.bat
+   ```
 
-   # Linux/macOS:
+   **macOS / Linux:**
+   ```bash
+   python3 -m venv .venv
    source .venv/bin/activate
    ```
 
 3. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
-   ```
-   *To run tests, install development dependencies:*
-   ```bash
    pip install -r requirements-dev.txt
    ```
 
-4. **Verify environment:**
+4. **Verify environment integrity:**
    ```bash
    python -m pip check
    ```
 
 ---
 
-## 🎮 Running the Application
+## 🎮 Running VisionCanvas
 
-Launch the main application:
+Launch the desktop application:
 
 ```bash
 python main.py
 ```
 
-*(Or explicitly with your virtual environment on Windows: `.\.venv\Scripts\python.exe main.py`)*
+*(On Windows, you can also launch explicitly via: `.\.venv\Scripts\python.exe main.py`)*
 
 ---
 
 ## 🖐️ Hand Gestures Guide
 
-| Gesture | Hand Pose | Action |
-| :--- | :--- | :--- |
-| **DRAW** | Index finger pointing up | Draws continuous strokes (or erases if Eraser is active). |
-| **SELECT** | Index + Middle fingers pointing up (V-pose) | Hover to select tools, colors, brush presets, sliders, and buttons without drawing. |
-| **UNDO** | 3 fingers extended (Index, Middle, Ring) | Triggers one undo step. Pose must be released before re-triggering. |
-| **REDO** | 4 or 5 fingers extended | Triggers one redo step. Pose must be released before re-triggering. |
-| **SAVE** | Thumbs Up (Thumb up, all 4 fingers curled) | Saves drawing snapshot to `output/canvas_<timestamp>.png`. |
-| **NONE** | Closed fist or hand at rest | Neutral state; disarms all drawing and actions. |
+| Gesture | Hand Pose | Action | Behavior Type |
+| :--- | :--- | :--- | :--- |
+| **DRAW** | Index finger extended pointing up; other fingers folded | Draw lines on canvas or erase | Continuous |
+| **SELECT** | Index + Middle fingers extended in a V-shape | Hover cursor to interact with UI buttons and palette | Continuous |
+| **UNDO** | 3 fingers extended (Index, Middle, Ring) | Undo last stroke | One-shot (latched) |
+| **REDO** | 4 or 5 fingers extended | Redo previously undone stroke | One-shot (latched) |
+| **SAVE** | Thumbs Up (thumb extended upward, all 4 fingers folded) | Save canvas snapshot to `output/` | One-shot (latched) |
+| **NONE** | Closed fist or hand at rest | Disarm cursor and stop drawing | Neutral |
+
+> **Lighting Tip:** For optimal tracking, ensure your hand is evenly illuminated and positioned approximately 0.5 to 1.5 meters from the webcam against a clean background.
 
 ---
 
-## ⌨️ Controls & Keyboard Shortcuts
+## ⌨️ Keyboard Shortcuts
 
-| Key | Action |
-| :--- | :--- |
-| `b` | Switch to **Brush** mode |
-| `e` | Switch to **Eraser** mode |
-| `i` | Toggle **Smart Ink** (auto shape recognition) |
-| `1` – `5` | Switch brush preset (1: Hard, 2: Soft, 3: Neon, 4: Pencil, 5: Water) |
+| Shortcut | Description |
+| :---: | :--- |
+| `b` | Switch to **Brush** tool |
+| `e` | Switch to **Eraser** tool |
+| `i` | Toggle **Smart Ink** (automatic geometric shape snapping) |
+| `1` – `5` | Switch brush presets (`1`: Hard, `2`: Soft, `3`: Neon, `4`: Pencil, `5`: Water) |
 | `[` / `]` | Decrease / Increase brush thickness |
 | `c` | Clear canvas (undoable) |
-| `z` | Undo stroke |
+| `z` | Undo last stroke |
 | `y` | Redo stroke |
-| `s` | Save canvas (white background PNG) to `output/` |
-| `x` | Export canvas (transparent PNG) to `output/` |
-| `d` | Toggle real-time diagnostics overlay (Render FPS, Inference FPS, Latency) |
-| `q` / `Esc` | Cleanly exit application |
-
----
-
-## 📐 Smart Ink (Signature Feature)
-
-Smart Ink brings geometric intelligence to VisionCanvas:
-1. Enable Smart Ink by selecting the **Smart Ink** tool in the UI or pressing `i`.
-2. Draw a rough geometric shape in the air (a straight line, rectangle, circle, or triangle).
-3. When the drawing gesture ends (finger lowered or transitioned to neutral), the `GeometryRecognizer` analyzes the polyline:
-   - Evaluates arc length, chord distance, closure ratio, and bounding box dimensions.
-   - For open strokes: evaluates straightness and perpendicular deviation to fit a clean line segment.
-   - For closed strokes: assesses radial standard deviation to fit a circle, or runs adaptive Douglas-Peucker contour simplification to detect triangles (3 corners) or rectangles (4 perpendicular corners).
-4. If confidence is $\ge 65\%$, the rough preview stroke is replaced by a crisp geometric shape.
-5. If the stroke is ambiguous (e.g. an organic illustration or random scribble), the original freehand stroke is preserved unmodified.
-
----
-
-## 🧪 Automated Testing
-
-VisionCanvas includes a comprehensive `pytest` test suite with 50 unit and integration tests covering filters, cursor recovery, state machine latching, rotation invariance, canvas history, export, and shape recognition:
-
-```bash
-pytest -v
-```
-
-### Test Coverage Highlights:
-- **Cursor Stability & Recovery (`test_virtual_cursor.py`):** 8 test scenarios verifying stationary noise smoothing, smooth tracking, single large outlier rejection, 3-frame persistent jump recovery, tracking loss, reacquisition, and invalid (NaN/Inf) coordinate handling.
-- **Filter Mathematics (`test_one_euro_filter.py`):** Verified zero/negative delta-time guards, division-by-zero prevention, and filter reinitialization.
-- **Gesture State Machine (`test_gesture_state_machine.py`):** Latching tests proving sustained poses never spam one-shot actions, release/cooldown enforcement, and noisy spike rejection.
-- **Canvas & Alpha Masking (`test_drawing_canvas.py`):** Single-point tap rendering, stroke interpolation, undo/redo stacks, clearing, dark stroke preservation, and PNG file export.
-- **Rotation-Invariant Finger Detector (`test_finger_detector.py`):** Synthetic landmark tests across varying 2D tilt angles and handedness.
-- **Smart Ink Recognizer (`test_geometry_recognizer.py`):** Tests for lines of varying slopes, noisy straight paths, rectangles with unequal sides, triangles of various orientations, circles of small/large radii, degenerate paths, scribbles, and micro-benchmark latency ($< 0.2\text{ ms}$).
+| `s` | Save drawing with solid white background (`output/canvas_<timestamp>.png`) |
+| `x` | Export drawing with transparent background (`output/canvas_<timestamp>.png`) |
+| `d` | Toggle real-time Diagnostics HUD (Render FPS, Inference FPS, Latency) |
+| `q` / `Esc` | Safely exit application |
 
 ---
 
@@ -148,40 +202,98 @@ pytest -v
 
 ```
 VisionCanvas/
-├── assets/                  # Project static assets
+├── .github/
+│   └── ISSUE_TEMPLATE/
+│       ├── bug_report.md       # Standardized bug reporting template
+│       └── feature_request.md  # Structured feature request template
+├── assets/                     # Static project assets (.gitkeep)
 ├── docs/
-│   └── ARCHITECTURE.md      # Detailed system design, data flow, and benchmarks
-├── output/                  # Exported drawing images (.png)
+│   ├── media/                  # Application screenshots and demo assets (.gitkeep)
+│   └── ARCHITECTURE.md         # Comprehensive system specification & algorithm proofs
+├── output/                     # Exported artwork and PNG captures (.gitkeep)
 ├── src/
-│   ├── brushes/             # Brush implementations (Hard, Soft, Neon, Pencil, Water)
-│   ├── camera/              # Threaded webcam capture with safe failure handling
-│   ├── canvas/              # Drawing canvas, alpha masking, history stacks, and export
-│   ├── geometry/            # Smart Ink geometric shape recognition pipeline
-│   ├── gestures/            # Virtual cursor, One Euro Filter, and GestureStateMachine
-│   ├── hand_tracking/       # MediaPipe HandLandmarker wrapper, finger detector, model task
-│   ├── ui/                  # Glassmorphic UI compositor and interaction hit-testing
-│   ├── utils/               # 1€ Filter mathematical implementation
-│   └── config.py            # Centralized portable configuration and thresholds
-├── tests/                   # 50 comprehensive unit and integration tests
-├── main.py                  # Application entry point with structured try/finally lifecycle
-├── pytest.ini               # Pytest configuration
-├── requirements.txt         # Clean runtime dependencies
-├── requirements-dev.txt     # Development and testing dependencies
-└── README.md
+│   ├── brushes/                # 5 brush engines (Hard, Soft, Neon, Pencil, Watercolor)
+│   ├── camera/                 # Threaded webcam capture with safe failure handling
+│   ├── canvas/                 # Drawing canvas, dual-layer alpha mask, and history stacks
+│   ├── geometry/               # Smart Ink geometric shape recognition pipeline
+│   ├── gestures/               # Virtual cursor, One Euro Filter, and GestureStateMachine
+│   ├── hand_tracking/          # MediaPipe HandLandmarker wrapper, finger detector, model task
+│   ├── ui/                     # Glassmorphic UI compositor, color wheel, and hit-testing
+│   ├── utils/                  # One Euro Filter signal smoothing implementation
+│   └── config.py               # Centralized configuration, thresholds, and portable paths
+├── tests/                      # 50 unit and integration tests across all modules
+├── CONTRIBUTING.md              # Contributor guide, coding standards, and PR workflow
+├── main.py                     # Main application entry point with try/finally lifecycle
+├── pytest.ini                  # Pytest test discovery configuration
+├── requirements.txt            # Runtime production dependencies
+├── requirements-dev.txt        # Development, testing, and linting dependencies
+└── README.md                   # Project landing page and documentation
 ```
+
+---
+
+## 🧪 Testing & Verification
+
+VisionCanvas maintains a robust automated test suite covering signal filtering, coordinate mapping, rotation invariance, gesture state machine latching, canvas history, and geometric recognition.
+
+Run the test suite:
+```bash
+pytest -v
+```
+
+### Verified Local Test Results (50 / 50 Passing)
+*Executed locally via `pytest -v` on Python 3.13.2 (Windows 11 AMD64):*
+- **`tests/test_brushes.py` (6 tests):** Stroke rendering, thickness scaling, and color propagation across all 5 brush engines.
+- **`tests/test_drawing_canvas.py` (6 tests):** Single-point tap rendering, linear interpolation, undo/redo stacks, canvas clearing, dark stroke preservation, and PNG export.
+- **`tests/test_finger_detector.py` (7 tests):** Synthetic landmark tests verifying drawing, selection, undo, redo, save, and 360° rotation invariance.
+- **`tests/test_geometry_recognizer.py` (14 tests):** Line fitting, noisy paths, circle fitting (varying radii), rectangles, triangles, open arcs, scribble rejection, degenerate inputs, and micro-benchmarking ($< 0.2\text{ ms}$).
+- **`tests/test_gesture_state_machine.py` (5 tests):** Continuous gesture activation, one-shot latching against sustained poses, release reactivation, and noise rejection.
+- **`tests/test_one_euro_filter.py` (4 tests):** Stationary noise filtering, negative delta-time guards, and filter state reset.
+- **`tests/test_virtual_cursor.py` (8 tests):** Smooth cursor motion, outlier rejection, 3-frame persistent movement recovery, tracking loss recovery, and NaN/Inf coordinate rejection.
 
 ---
 
 ## 🔧 Troubleshooting
 
-- **Webcam Fails to Open:** Ensure no other application (Zoom, Teams, browser) is locking the webcam. If using an external USB webcam, open `src/config.py` and set `CAMERA_INDEX = 1`.
-- **Model File Not Found:** Ensure `src/hand_tracking/hand_landmarker.task` is present in your working tree. `src/config.py` uses portable `pathlib.Path` resolution relative to the project root.
-- **OpenCV Version Conflicts:** Ensure you did not manually install both `opencv-python` and `opencv-contrib-python`. `requirements.txt` specifies `opencv-contrib-python>=4.8.0` which is fully compatible with MediaPipe.
+| Issue | Likely Cause | Recommended Resolution |
+| :--- | :--- | :--- |
+| **Webcam fails to initialize** | Camera locked by another application or incorrect index | Close apps using the camera (Zoom, Teams). If using an external USB webcam, open `src/config.py` and set `CAMERA_INDEX = 1`. |
+| **Hand landmarks not detected** | Insufficient illumination or hand out of frame | Ensure your hand is within the camera viewport with adequate front-facing light. |
+| **Model file missing error** | `hand_landmarker.task` path resolution failure | Verify that `src/hand_tracking/hand_landmarker.task` exists. Paths in `src/config.py` use portable `pathlib.Path` resolution. |
+| **OpenCV / NumPy version conflict** | Multiple conflicting OpenCV installations | Ensure you did not install both `opencv-python` and `opencv-contrib-python`. Run `pip uninstall opencv-python` and reinstall `requirements.txt`. |
 
 ---
 
-## 📄 License & Attribution
+## 🗺️ Roadmap (Planned Enhancements)
 
-- VisionCanvas application code is licensed under the MIT License.
-- MediaPipe Hand Landmarker model is provided by Google LLC under the Apache 2.0 License.
-- One Euro Filter algorithm is based on Casiez et al. (CHI 2012).
+The following features are planned for future releases and are currently in the design stage:
+
+- [ ] **Multi-Layer Canvas:** Layer management with individual opacity sliders, visibility toggles, and blending modes.
+- [ ] **Project Session Persistence:** Save and reload multi-layer drawing projects in an editable format.
+- [ ] **Expanded Geometric Primitives:** Smart Ink support for ellipses, arrows, and regular star polygons.
+- [ ] **Session Recording / Timelapse:** Built-in video capture of drawing sessions with gesture overlay.
+- [ ] **Standalone Distribution:** Pre-compiled executables for Windows and macOS via PyInstaller.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing guidelines, and pull request workflow.
+
+To report bugs or suggest enhancements, please use our [Issue Templates](.github/ISSUE_TEMPLATE/).
+
+---
+
+## 📜 Acknowledgements & Attribution
+
+- **Original Project:** Based on the foundational VisionCanvas project created by [Shashwat2506](https://github.com/Shashwat2506/VisionCanvas).
+- **Maintenance & Architecture Polish:** Forked, stabilized, tested, and maintained by [srushtijayaraman](https://github.com/srushtijayaraman).
+- **Hand Tracking Model:** MediaPipe HandLandmarker provided by Google LLC under the Apache 2.0 License.
+- **Signal Filtering Algorithm:** 1€ Filter designed by Géry Casiez, Nicolas Roussel, and Daniel Vogel (*CHI 2012*).
+
+---
+
+## 📄 License
+
+*Upstream licensing pending confirmation.*
+VisionCanvas is a fork of [Shashwat2506/VisionCanvas](https://github.com/Shashwat2506/VisionCanvas). Applicable licensing terms, open-source distribution rights, and upstream permissions need to be confirmed before a formal license file can be applied to this repository.
