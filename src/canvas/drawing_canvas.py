@@ -73,9 +73,11 @@ class DrawingCanvas:
             self.redo_stack.clear()
             self.is_drawing = True
 
+        mask_val = int(round(255 * getattr(self.brush, "opacity", 1.0)))
+        thickness = getattr(self.brush, "thickness", 8)
+
         if self.prev_point is None:
             # Single tap / initial contact point: draw a solid circle dot
-            thickness = getattr(self.brush, "thickness", 8)
             radius = max(1, thickness // 2)
             if self.is_eraser:
                 cv2.circle(self.canvas, curr_point, radius, (0, 0, 0), -1, cv2.LINE_AA)
@@ -83,7 +85,7 @@ class DrawingCanvas:
             else:
                 color = getattr(self.brush, "color", (255, 0, 255))
                 cv2.circle(self.canvas, curr_point, radius, color, -1, cv2.LINE_AA)
-                cv2.circle(self.mask, curr_point, radius, 255, -1, cv2.LINE_AA)
+                cv2.circle(self.mask, curr_point, radius, mask_val, -1, cv2.LINE_AA)
             self.prev_point = curr_point
             return
 
@@ -92,8 +94,6 @@ class DrawingCanvas:
         dy = curr_point[1] - self.prev_point[1]
         dist = math.hypot(dx, dy)
         max_dist = max(1.0, float(MAX_INTERPOLATION_DISTANCE))
-
-        thickness = getattr(self.brush, "thickness", 8)
 
         if dist > max_dist:
             steps = int(dist / max_dist)
@@ -115,14 +115,14 @@ class DrawingCanvas:
                     cv2.line(self.mask, p_prev, p_curr, 0, thickness, cv2.LINE_AA)
                 else:
                     self.brush.stroke(self.canvas, p_prev, p_curr)
-                    cv2.line(self.mask, p_prev, p_curr, 255, thickness, cv2.LINE_AA)
+                    cv2.line(self.mask, p_prev, p_curr, mask_val, thickness, cv2.LINE_AA)
         else:
             if self.is_eraser:
                 cv2.line(self.canvas, self.prev_point, curr_point, (0, 0, 0), thickness, cv2.LINE_AA)
                 cv2.line(self.mask, self.prev_point, curr_point, 0, thickness, cv2.LINE_AA)
             else:
                 self.brush.stroke(self.canvas, self.prev_point, curr_point)
-                cv2.line(self.mask, self.prev_point, curr_point, 255, thickness, cv2.LINE_AA)
+                cv2.line(self.mask, self.prev_point, curr_point, mask_val, thickness, cv2.LINE_AA)
 
         self.prev_point = curr_point
 
@@ -172,6 +172,15 @@ class DrawingCanvas:
 
         self.canvas = np.zeros_like(self.canvas)
         self.mask = np.zeros_like(self.mask)
+
+    def is_empty(self) -> bool:
+        """Check if the canvas has no drawn strokes or shapes.
+
+        Returns:
+            True if mask is completely clear, False if strokes exist.
+        """
+        return bool(np.count_nonzero(self.mask) == 0)
+
     def draw_shape(self, shape_type: str, points: List[Tuple[int, int]]) -> None:
         """Render a clean geometric shape as a single undoable canvas action.
 
@@ -194,6 +203,14 @@ class DrawingCanvas:
             p1, p2 = points[0], points[1]
             self.brush.stroke(self.canvas, p1, p2)
             cv2.line(self.mask, p1, p2, 255, thickness, cv2.LINE_AA)
+        elif shape_type == "ARROW" and len(points) >= 4:
+            shaft_start, tip, barb1, barb2 = points[0], points[1], points[2], points[3]
+            self.brush.stroke(self.canvas, shaft_start, tip)
+            cv2.line(self.mask, shaft_start, tip, 255, thickness, cv2.LINE_AA)
+            self.brush.stroke(self.canvas, tip, barb1)
+            cv2.line(self.mask, tip, barb1, 255, thickness, cv2.LINE_AA)
+            self.brush.stroke(self.canvas, tip, barb2)
+            cv2.line(self.mask, tip, barb2, 255, thickness, cv2.LINE_AA)
         elif shape_type in ("RECTANGLE", "TRIANGLE", "CIRCLE"):
             num_pts = len(points)
             for i in range(num_pts):

@@ -20,12 +20,12 @@ DETECTION_CONFIDENCE = 0.7
 TRACKING_CONFIDENCE = 0.7
 
 # --- One Euro Filter (Smoothing) ---
-# mincutoff: lower = smoother but laggier. 1.0-10.0 good for hand tracking
-# beta: higher = more responsive to fast movement. 0.01-0.5 typical
+# mincutoff: lower = smoother but laggier. 1.0-5.0 ideal for hand air-drawing
+# beta: higher = more responsive to fast movement. 0.05-0.2 typical
 # dcutoff: derivative cutoff, usually left at 1.0
 SMOOTHING_ENABLED = True
-ONE_EURO_MIN_CUTOFF = 10.0
-ONE_EURO_BETA = 0.05
+ONE_EURO_MIN_CUTOFF = 2.0
+ONE_EURO_BETA = 0.10
 ONE_EURO_DCUTOFF = 1.0
 
 # --- Virtual Cursor & Outlier Rejection ---

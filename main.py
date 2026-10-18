@@ -39,6 +39,7 @@ from src.gestures.state_machine import GestureStateMachine
 from src.hand_tracking.detector import HandDetector
 from src.hand_tracking.finger_detector import FingerDetector
 from src.geometry.geometry_recognizer import GeometryRecognizer
+from src.storage.save_manager import SaveManager
 from src.ui.modern_ui import ModernUI
 
 # Brush classes indexed to match UI brush preset order (1-5)
@@ -89,6 +90,7 @@ def main():
 
     canvas = DrawingCanvas(CAMERA_WIDTH, CAMERA_HEIGHT, brush)
     geometry_recognizer = GeometryRecognizer()
+    save_manager = SaveManager(default_dir=OUTPUT_DIR)
     current_stroke_points = []
     debug_mode = DEBUG_PERFORMANCE
 
@@ -106,8 +108,10 @@ def main():
                 canvas.undo()
                 # Draw the clean geometric shape
                 canvas.draw_shape(result.shape_type, result.refined_points)
+                save_manager.mark_dirty()
                 ui.set_status_message(f"Smart Ink: {result.shape_type} ({int(result.confidence * 100)}%)")
             else:
+                save_manager.mark_dirty()
                 ui.set_status_message("Smart Ink: Freehand fallback")
         current_stroke_points = []
         canvas.reset_stroke()
@@ -125,18 +129,43 @@ def main():
         elif ui.active_tool == 2:
             canvas.set_brush(brush, is_eraser=False)
 
+    def _set_mode(idx: int):
+        """Switch top navigation mode (0: Draw, 1: Select, 2: Smart Ink, 3: Move)."""
+        _finalize_stroke()
+        if idx == 0:  # Draw mode
+            if ui.active_tool not in (0, 1):
+                ui.set_active_tool(0)
+            ui.set_active_mode(0)
+            tool_name = "Brush" if ui.active_tool == 0 else "Eraser"
+            ui.set_status_message(f"Mode: Draw ({tool_name}) — Point index finger to draw")
+        elif idx == 1:  # Select mode
+            ui.set_active_mode(1)
+            ui.set_active_tool(-1)  # No drawing tool active
+            ui.set_status_message("Mode: Select — Two fingers to interact without drawing")
+        elif idx == 2:  # Smart Ink mode
+            ui.set_active_mode(2)
+            ui.set_active_tool(2)
+            ui.set_status_message("Mode: Smart Ink — Auto-snaps lines, boxes, circles, arrows")
+        elif idx == 3:  # Move mode
+            ui.set_active_mode(3)
+            ui.set_active_tool(-1)  # No drawing tool active
+            ui.set_status_message("Mode: Move / Pan — Canvas navigation mode")
+        _rebuild_brush()
+
     def _set_tool(idx: int):
         """Switch active tool (0: Brush, 1: Eraser, 2: Smart Ink)."""
-        ui.set_active_tool(idx)
         if idx == 0:
-            canvas.set_brush(brush, is_eraser=False)
-            ui.set_status_message("Tool: Brush")
+            ui.set_active_mode(0)
+            ui.set_active_tool(0)
+            ui.set_status_message("Tool: Brush (Draw mode)")
         elif idx == 1:
-            canvas.set_brush(eraser_brush, is_eraser=True)
-            ui.set_status_message("Tool: Eraser")
+            ui.set_active_mode(0)
+            ui.set_active_tool(1)
+            ui.set_status_message("Tool: Eraser (Draw mode)")
         elif idx == 2:
-            canvas.set_brush(brush, is_eraser=False)
-            ui.set_status_message("Tool: Smart Ink (Auto Shape)")
+            ui.set_active_mode(2)
+            ui.set_active_tool(2)
+            ui.set_status_message("Tool: Smart Ink (Auto-shape mode)")
         _rebuild_brush()
 
     def _set_brush_idx(idx: int):
@@ -156,19 +185,26 @@ def main():
         ui.set_brush_size(brush_size)
         _rebuild_brush()
 
-    def _save_canvas(background: str = "white") -> bool:
-        """Export the drawing to disk."""
-        timestamp = int(time.time())
-        filename = f"canvas_{timestamp}.png"
-        filepath = os.path.join(OUTPUT_DIR, filename)
-        success = canvas.export_image(filepath, background=background)
-        if success:
-            bg_label = "Transparent" if background == "transparent" else "White"
-            ui.set_status_message(f"Saved ({bg_label}): {filename}")
-            print(f"[VisionCanvas] Exported {filepath}")
-        else:
-            ui.set_status_message("Save failed!")
-        return success
+    def _handle_save(background: str = "white"):
+        """Explicit Save: writes to active project destination or triggers Save As."""
+        res = save_manager.save(canvas, background=background)
+        ui.set_status_message(res.message)
+        if res.filepath:
+            print(f"[VisionCanvas] {res.message} -> {res.filepath}")
+
+    def _handle_save_as(background: str = "white"):
+        """Explicit Save As: prompts user for destination file path."""
+        res = save_manager.save_as(canvas, background=background)
+        ui.set_status_message(res.message)
+        if res.filepath:
+            print(f"[VisionCanvas] {res.message} -> {res.filepath}")
+
+    def _handle_export(background: str = "transparent"):
+        """Explicit Export: prompts for user export file path."""
+        res = save_manager.export_image(canvas, background=background)
+        ui.set_status_message(res.message)
+        if res.filepath:
+            print(f"[VisionCanvas] {res.message} -> {res.filepath}")
 
     # ── Mouse Interaction Callback ──────────────────────────────
     def on_mouse(event, x, y, flags, param):
@@ -182,10 +218,20 @@ def main():
             if ui.handle_brush_size_selection(x, y):
                 _rebuild_brush()
                 return
+            # Check top navigation mode pills
+            top_mode = ui.handle_top_mode_click(x, y)
+            if top_mode is not None:
+                _set_mode(top_mode)
+                return
             # Check tool buttons
             tool_idx = ui.handle_tool_click(x, y)
             if tool_idx is not None:
                 _set_tool(tool_idx)
+                return
+            # Check canvas background mode selection
+            bg_sel = ui.handle_bg_mode_click(x, y)
+            if bg_sel is not None:
+                ui.set_status_message(f"Canvas Background: {bg_sel.title()}")
                 return
             # Check brush presets
             brush_idx = ui.handle_brush_preset_click(x, y)
@@ -197,17 +243,20 @@ def main():
             if action:
                 if action == "CLEAR":
                     canvas.clear()
+                    save_manager.mark_dirty()
                     ui.set_status_message("Canvas Cleared")
                 elif action == "UNDO":
                     if canvas.undo():
+                        save_manager.mark_dirty()
                         ui.set_status_message("Action: Undo")
                 elif action == "REDO":
                     if canvas.redo():
+                        save_manager.mark_dirty()
                         ui.set_status_message("Action: Redo")
                 elif action == "SAVE":
-                    _save_canvas(background="white")
+                    _handle_save(background="white")
                 elif action == "EXPORT":
-                    _save_canvas(background="transparent")
+                    _handle_export(background="transparent")
 
     cv2.setMouseCallback(window_name, on_mouse)
 
@@ -236,6 +285,7 @@ def main():
     inf_fps = 0.0
 
     # ── Main Render Loop ────────────────────────────────────────
+    _window_close_handled = False
     try:
         while True:
             # Get latest inference result (non-blocking)
@@ -313,15 +363,18 @@ def main():
                 cursor_x, cursor_y = cx, cy
 
                 # ── Action Dispatch ─────────────────────────────────
-                # 1. Discrete one-shot actions (Undo, Redo, Save)
+                # 1. Discrete one-shot actions (Undo, Redo)
                 if event.triggered_action == "UNDO":
                     if canvas.undo():
+                        save_manager.mark_dirty()
                         ui.set_status_message("Action: Undo")
                 elif event.triggered_action == "REDO":
                     if canvas.redo():
+                        save_manager.mark_dirty()
                         ui.set_status_message("Action: Redo")
                 elif event.triggered_action == "SAVE":
-                    _save_canvas(background="white")
+                    # Gestures must never trigger save; explicit click or shortcut required
+                    pass
 
                 # 2. Continuous actions (Select, Draw)
                 if gesture == "SELECT":
@@ -329,9 +382,15 @@ def main():
                         _rebuild_brush()
                     if ui.handle_brush_size_selection(cursor_x, cursor_y):
                         _rebuild_brush()
+                    top_mode_sel = ui.handle_top_mode_click(cursor_x, cursor_y)
+                    if top_mode_sel is not None:
+                        _set_mode(top_mode_sel)
                     tool_sel = ui.handle_tool_click(cursor_x, cursor_y)
                     if tool_sel is not None:
                         _set_tool(tool_sel)
+                    bg_sel = ui.handle_bg_mode_click(cursor_x, cursor_y)
+                    if bg_sel is not None:
+                        ui.set_status_message(f"Canvas Background: {bg_sel.title()}")
                     preset_sel = ui.handle_brush_preset_click(cursor_x, cursor_y)
                     if preset_sel is not None:
                         _set_brush_idx(preset_sel)
@@ -339,20 +398,28 @@ def main():
                     if action_sel:
                         if action_sel == "CLEAR":
                             canvas.clear()
+                            save_manager.mark_dirty()
                             ui.set_status_message("Canvas Cleared")
-                        elif action_sel == "SAVE":
-                            _save_canvas(background="white")
-                        elif action_sel == "EXPORT":
-                            _save_canvas(background="transparent")
+                        elif action_sel == "UNDO":
+                            if canvas.undo():
+                                save_manager.mark_dirty()
+                                ui.set_status_message("Action: Undo")
+                        elif action_sel == "REDO":
+                            if canvas.redo():
+                                save_manager.mark_dirty()
+                                ui.set_status_message("Action: Redo")
+                        # Note: Save and Export require explicit mouse click or keyboard shortcut;
+                        # hovering in SELECT mode must never trigger file dialogs.
                     _finalize_stroke()
 
                 elif gesture == "DRAW":
-                    # Draw in Brush (0), Eraser (1), or Smart Ink (2) modes
-                    if ui.active_tool in (0, 1, 2):
+                    # Only draw when in Draw (0) or Smart Ink (2) modes
+                    if ui.active_mode in (0, 2) and ui.active_tool in (0, 1, 2):
                         if is_new:
                             canv_x, canv_y = ui.ui_to_canvas(cursor_x, cursor_y)
                             if canv_x is not None and canv_y is not None:
                                 canvas.draw((canv_x, canv_y))
+                                save_manager.mark_dirty()
                                 if ui.active_tool == 2:
                                     current_stroke_points.append((canv_x, canv_y))
                             else:
@@ -404,10 +471,31 @@ def main():
 
             cv2.imshow(window_name, output)
 
-            # ── Keyboard Controls ───────────────────────────────────
+            # ── Window Close & Keyboard Controls ────────────────────
+            prop_visible = cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE)
+            if prop_visible < 1:
+                if not _window_close_handled:
+                    _window_close_handled = True
+                    perm = save_manager.check_exit_permission(canvas)
+                    if perm == "EXIT":
+                        break
+                    else:
+                        # User cancelled close: recreate window and mouse callback
+                        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                        cv2.setMouseCallback(window_name, on_mouse)
+                        cv2.imshow(window_name, output)
+                        cv2.waitKey(1)
+                        ui.set_status_message("Exit cancelled — unsaved changes preserved")
+            else:
+                _window_close_handled = False
+
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q") or key == 27:  # 'q' or ESC
-                break
+                perm = save_manager.check_exit_permission(canvas)
+                if perm == "EXIT":
+                    break
+                else:
+                    ui.set_status_message("Exit cancelled — unsaved changes preserved")
             # Tool switching
             elif key == ord("b"):
                 _set_tool(0)  # Brush
@@ -416,6 +504,10 @@ def main():
             elif key == ord("i"):
                 # Toggle Smart Ink mode
                 _set_tool(0 if ui.active_tool == 2 else 2)
+            # Background toggle (w: whiteboard / webcam)
+            elif key == ord("w"):
+                new_bg = ui.toggle_background_mode()
+                ui.set_status_message(f"Canvas Background: {new_bg.title()}")
             # Brush presets (1-5)
             elif ord("1") <= key <= ord("5"):
                 _set_brush_idx(key - ord("1"))
@@ -427,17 +519,22 @@ def main():
             # Canvas operations
             elif key == ord("c"):
                 canvas.clear()
+                save_manager.mark_dirty()
                 ui.set_status_message("Canvas Cleared")
-            elif key == ord("z"):
+            elif key == ord("z") or key == ord("u"):
                 if canvas.undo():
+                    save_manager.mark_dirty()
                     ui.set_status_message("Action: Undo")
-            elif key == ord("y"):
+            elif key == ord("y") or key == ord("r"):
                 if canvas.redo():
+                    save_manager.mark_dirty()
                     ui.set_status_message("Action: Redo")
             elif key == ord("s"):
-                _save_canvas(background="white")
+                _handle_save(background="white")
+            elif key == ord("S"):  # Shift+S: Explicit Save As
+                _handle_save_as(background="white")
             elif key == ord("x"):
-                _save_canvas(background="transparent")
+                _handle_export(background="transparent")
             elif key == ord("d"):
                 debug_mode = not debug_mode
                 ui.set_status_message("Diagnostics: ON" if debug_mode else "Diagnostics: OFF")

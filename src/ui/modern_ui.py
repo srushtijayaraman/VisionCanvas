@@ -35,10 +35,12 @@ class ModernUI:
     ACCENT_DIM = (80, 50, 160)
     NEON_PINK = (255, 50, 150)
     NEON_CYAN = (0, 220, 255)
-    TEXT_PRIMARY = (230, 230, 240)
-    TEXT_SECONDARY = (130, 130, 150)
-    TEXT_DIM = (80, 80, 100)
+    TEXT_PRIMARY = (240, 240, 250)
+    TEXT_SECONDARY = (165, 165, 185)
+    TEXT_MUTED = (115, 115, 135)
+    TEXT_DIM = (85, 85, 105)
     LIVE_GREEN = (50, 220, 100)
+    TRACK_LOST = (70, 70, 220)
 
     # Drawing colour palette (BGR for OpenCV)
     PALETTE_COLORS = [
@@ -124,6 +126,7 @@ class ModernUI:
         self.active_brush = 0
         self.brush_size = 12
         self.tracking_active = True
+        self.bg_mode = "webcam"
 
         # Pre-generate assets
         self._color_wheel, self._wheel_mask = self._generate_color_wheel(130, 14)
@@ -134,6 +137,8 @@ class ModernUI:
         # Positions populated by _render_base
         self._color_centers = []
         self._tool_rects = []
+        self._mode_rects = []
+        self._bg_mode_rects = []
         self._brush_preset_rects = []
         self._action_rects = []
         self._status_msg = ""
@@ -273,6 +278,20 @@ class ModernUI:
                 return idx
         return None
 
+    def handle_top_mode_click(self, cursor_x, cursor_y):
+        """Check if cursor is over a top mode pill (Draw, Select, Smart Ink, Move)."""
+        for x1, y1, x2, y2, idx in getattr(self, '_mode_rects', []):
+            if x1 <= cursor_x <= x2 and y1 <= cursor_y <= y2:
+                return idx
+        return None
+
+    def set_active_mode(self, idx: int):
+        """Set active top navigation mode and refresh UI base."""
+        if 0 <= idx < len(self.MODES) and self.active_mode != idx:
+            self.active_mode = idx
+            self._base = self._render_base()
+            self._build_color_rects()
+
     def handle_brush_preset_click(self, cursor_x, cursor_y):
         """Check if cursor is over a brush preset button. Returns brush index or None."""
         for x1, y1, x2, y2, idx in getattr(self, '_brush_preset_rects', []):
@@ -301,10 +320,37 @@ class ModernUI:
             return cx, cy
         return None, None
 
+    def handle_bg_mode_click(self, cursor_x, cursor_y):
+        """Check if cursor is over a background mode button. Returns new mode or None."""
+        for x1, y1, x2, y2, mode in getattr(self, '_bg_mode_rects', []):
+            if x1 <= cursor_x <= x2 and y1 <= cursor_y <= y2:
+                self.set_background_mode(mode)
+                return mode
+        return None
+
+    def set_background_mode(self, mode: str):
+        """Set canvas background mode ('webcam' or 'whiteboard') and refresh UI base."""
+        if mode in ("webcam", "whiteboard") and mode != getattr(self, "bg_mode", "webcam"):
+            self.bg_mode = mode
+            self._base = self._render_base()
+            self._build_color_rects()
+
+    def get_background_mode(self) -> str:
+        """Return the current background mode."""
+        return getattr(self, "bg_mode", "webcam")
+
+    def toggle_background_mode(self) -> str:
+        """Toggle background mode between 'webcam' and 'whiteboard'."""
+        curr = getattr(self, "bg_mode", "webcam")
+        new_mode = "whiteboard" if curr == "webcam" else "webcam"
+        self.set_background_mode(new_mode)
+        return self.bg_mode
+
     # ── State changes (re-render base on change) ────────────────
 
     def set_active_tool(self, idx: int):
-        if 0 <= idx < len(self.TOOLS):
+        """Set active tool index (-1: None, 0: Brush, 1: Eraser, 2: Smart Ink)."""
+        if idx == -1 or 0 <= idx < len(self.TOOLS):
             self.active_tool = idx
             self._base = self._render_base()
             self._build_color_rects()
@@ -328,14 +374,15 @@ class ModernUI:
 
         # Fonts
         try:
-            font_lg = ImageFont.truetype("arial.ttf", 16)
+            font_lg = ImageFont.truetype("arial.ttf", 15)
             font_md = ImageFont.truetype("arial.ttf", 13)
             font_sm = ImageFont.truetype("arial.ttf", 11)
+            font_xs = ImageFont.truetype("arial.ttf", 9)
             font_brand = ImageFont.truetype("arial.ttf", 18)
             font_icon = ImageFont.truetype("arial.ttf", 14)
         except (IOError, OSError):
             font_lg = ImageFont.load_default()
-            font_md = font_sm = font_icon = font_lg
+            font_md = font_sm = font_xs = font_icon = font_lg
             font_brand = font_lg
 
         r = self.radius
@@ -346,26 +393,33 @@ class ModernUI:
             radius=r, fill=self.PANEL, outline=self.PANEL_BORDER,
         )
         d.text((self.pad + 16, self.pad + 8), "VisionCanvas", fill=self.ACCENT, font=font_brand)
-        d.text((self.pad + 16, self.pad + 30), "Gesture Studio", fill=self.TEXT_DIM, font=font_sm)
+        d.text((self.pad + 16, self.pad + 30), "Gesture Studio", fill=self.TEXT_MUTED, font=font_sm)
 
         # Mode pills
-        pill_total_w = len(self.MODES) * 90
+        self._mode_rects = []
+        pill_w = 94
+        pill_h = 32
+        pill_gap = 10
+        pill_total_w = len(self.MODES) * pill_w + (len(self.MODES) - 1) * pill_gap
         pill_start_x = (self.width - pill_total_w) // 2
         for i, mode in enumerate(self.MODES):
-            px = pill_start_x + i * 90
+            px = pill_start_x + i * (pill_w + pill_gap)
             py = self.pad + 10
-            pw, ph = 80, 32
+            self._mode_rects.append((px, py, px + pill_w, py + pill_h, i))
             if i == self.active_mode:
-                d.rounded_rectangle([px, py, px + pw, py + ph], radius=16, fill=self.ACCENT)
-                d.text((px + 16, py + 8), mode, fill=(255, 255, 255), font=font_md)
+                d.rounded_rectangle([px, py, px + pill_w, py + pill_h],
+                                    radius=8, fill=self.ACCENT, outline=self.ACCENT_GLOW)
+                d.text((px + 14, py + 7), mode, fill=(255, 255, 255), font=font_md)
             else:
-                d.text((px + 16, py + 8), mode, fill=self.TEXT_SECONDARY, font=font_md)
+                d.rounded_rectangle([px, py, px + pill_w, py + pill_h],
+                                    radius=8, fill=(24, 24, 38), outline=self.PANEL_BORDER)
+                d.text((px + 14, py + 7), mode, fill=self.TEXT_SECONDARY, font=font_md)
 
-        # Right controls
-        right_x = self.width - self.pad - 200
-        d.rounded_rectangle([right_x + 60, self.pad + 10, right_x + 160, self.pad + 38],
-                            radius=14, fill=self.ACCENT_DIM)
-        d.text((right_x + 72, self.pad + 15), "Pro Mode", fill=self.ACCENT_GLOW, font=font_sm)
+        # Right status tag
+        right_x = self.width - self.pad - 180
+        d.rounded_rectangle([right_x + 50, self.pad + 12, right_x + 160, self.pad + 38],
+                            radius=6, fill=(24, 24, 38), outline=self.PANEL_BORDER)
+        d.text((right_x + 64, self.pad + 17), "Studio Studio", fill=self.ACCENT_GLOW, font=font_xs)
 
         # ── Left Panel ──────────────────────────────────────────
         lp_x1 = self.pad
@@ -378,36 +432,62 @@ class ModernUI:
 
         # Tools
         ty = lp_y1 + 12
-        d.text((lp_x1 + 16, ty), "TOOLS", fill=self.TEXT_DIM, font=font_sm)
-        ty += 22
+        d.text((lp_x1 + 16, ty), "TOOLS", fill=self.TEXT_MUTED, font=font_sm)
+        ty += 20
 
         self._tool_rects = []
         for i, tool_name in enumerate(self.TOOLS):
-            tool_y = ty + i * 32
-            self._tool_rects.append((lp_x1 + 8, tool_y - 2, lp_x2 - 8, tool_y + 24, i))
+            tool_y = ty + i * 34
+            self._tool_rects.append((lp_x1 + 10, tool_y, lp_x2 - 10, tool_y + 28, i))
             
-            icon_color = (255, 255, 255) if i == self.active_tool else self.TEXT_DIM
-            text_color = (255, 255, 255) if i == self.active_tool else self.TEXT_SECONDARY
-            
-            if i == self.active_tool:
-                d.rounded_rectangle([lp_x1 + 8, tool_y - 2, lp_x2 - 8, tool_y + 24],
-                                    radius=8, fill=self.ACCENT)
-                                    
-            d.text((lp_x1 + 36, tool_y + 3), tool_name, fill=text_color, font=font_md)
-            
-            ix, iy = lp_x1 + 16, tool_y + 4
+            # Active tool determination
+            if self.active_mode == 0:  # Draw mode
+                is_active = (i == self.active_tool)
+            elif self.active_mode == 2:  # Smart Ink mode
+                is_active = (i == 2)
+            else:  # Select (1) or Move (3) mode: drawing tools inactive
+                is_active = False
+
+            if is_active:
+                d.rounded_rectangle([lp_x1 + 10, tool_y, lp_x2 - 10, tool_y + 28],
+                                    radius=8, fill=self.ACCENT, outline=self.ACCENT_GLOW)
+                icon_color = (255, 255, 255)
+                text_color = (255, 255, 255)
+            else:
+                d.rounded_rectangle([lp_x1 + 10, tool_y, lp_x2 - 10, tool_y + 28],
+                                    radius=8, fill=(24, 24, 38), outline=self.PANEL_BORDER)
+                icon_color = self.TEXT_MUTED
+                text_color = self.TEXT_SECONDARY
+
+            d.text((lp_x1 + 38, tool_y + 6), tool_name, fill=text_color, font=font_md)
+
+            ix, iy = lp_x1 + 18, tool_y + 7
             if tool_name == "Brush":
-                d.line([(ix+2, iy+10), (ix+10, iy+2)], fill=icon_color, width=2)
-                d.point((ix+1, iy+11), fill=icon_color)
+                d.line([(ix+2, iy+12), (ix+11, iy+3)], fill=icon_color, width=2)
+                d.point((ix+1, iy+13), fill=icon_color)
             elif tool_name == "Eraser":
-                d.rectangle([(ix, iy+4), (ix+12, iy+10)], outline=icon_color, width=1)
-                d.line([(ix+8, iy+4), (ix+8, iy+10)], fill=icon_color, width=1)
+                d.rectangle([(ix, iy+4), (ix+13, iy+11)], outline=icon_color, width=1)
+                d.line([(ix+9, iy+4), (ix+9, iy+11)], fill=icon_color, width=1)
             elif tool_name == "Smart Ink":
-                d.polygon([(ix+6, iy+1), (ix+12, iy+6), (ix+9, iy+13), (ix+3, iy+13), (ix, iy+6)], outline=icon_color)
+                d.polygon([(ix+6, iy+1), (ix+13, iy+6), (ix+10, iy+14), (ix+3, iy+14), (ix, iy+6)], outline=icon_color)
+
+        # Mode notice if in non-drawing mode
+        badge_y = ty + len(self.TOOLS) * 34 + 4
+        if self.active_mode == 1:
+            d.rounded_rectangle([lp_x1 + 10, badge_y, lp_x2 - 10, badge_y + 22],
+                                radius=6, fill=(18, 36, 44), outline=(0, 180, 210))
+            d.text((lp_x1 + 16, badge_y + 5), "Select Mode Active", fill=self.NEON_CYAN, font=font_xs)
+            bp_y = badge_y + 28
+        elif self.active_mode == 3:
+            d.rounded_rectangle([lp_x1 + 10, badge_y, lp_x2 - 10, badge_y + 22],
+                                radius=6, fill=(36, 18, 44), outline=(180, 90, 230))
+            d.text((lp_x1 + 18, badge_y + 5), "Move Mode Active", fill=self.ACCENT_GLOW, font=font_xs)
+            bp_y = badge_y + 28
+        else:
+            bp_y = ty + len(self.TOOLS) * 34 + 12
 
         # Brush Presets
-        bp_y = ty + len(self.TOOLS) * 32 + 12
-        d.text((lp_x1 + 16, bp_y), "BRUSH PRESETS", fill=self.TEXT_DIM, font=font_sm)
+        d.text((lp_x1 + 16, bp_y), "BRUSH PRESETS", fill=self.TEXT_MUTED, font=font_sm)
         bp_y += 18
 
         cols = 3
@@ -428,8 +508,9 @@ class ModernUI:
             by = bp_y + row * (cell + gap)
             self._brush_preset_rects.append((bx, by, bx + cell, by + cell, i))
             outline_c = self.ACCENT if i == self.active_brush else self.PANEL_BORDER
+            fill_c = (32, 28, 52) if i == self.active_brush else (22, 22, 36)
             d.rounded_rectangle([bx, by, bx + cell, by + cell], radius=8,
-                                fill=(22, 22, 36), outline=outline_c)
+                                fill=fill_c, outline=outline_c)
             # Draw stroke preview
             if i < len(brush_preview_styles):
                 color, width, style = brush_preview_styles[i]
@@ -450,8 +531,8 @@ class ModernUI:
 
         # Brush Size
         bs_y = bp_y + (len(self.BRUSH_NAMES) // cols + 1) * (cell + gap) + 8
-        d.text((lp_x1 + 16, bs_y), "BRUSH SIZE", fill=self.TEXT_DIM, font=font_sm)
-        d.text((lp_x2 - 44, bs_y), f"{self.brush_size}px", fill=self.TEXT_PRIMARY, font=font_sm)
+        d.text((lp_x1 + 16, bs_y), "BRUSH SIZE", fill=self.TEXT_MUTED, font=font_sm)
+        d.text((lp_x2 - 46, bs_y), f"{self.brush_size}px", fill=self.TEXT_PRIMARY, font=font_sm)
         bs_y += 18
 
         # Slider track
@@ -491,7 +572,7 @@ class ModernUI:
 
         # Colors header
         cy = rp_y1 + 12
-        d.text((rp_x1 + 16, cy), "COLORS", fill=self.TEXT_DIM, font=font_sm)
+        d.text((rp_x1 + 16, cy), "COLORS", fill=self.TEXT_MUTED, font=font_sm)
         cy += 20
 
         # ── Positions for color wheel overlay (placed on numpy later) ──
@@ -519,7 +600,7 @@ class ModernUI:
 
         # ── Recent Colors (store positions for hit testing) ─────
         rc_y = hex_y + 28
-        d.text((rp_x1 + 16, rc_y), "RECENT COLORS", fill=self.TEXT_DIM, font=font_sm)
+        d.text((rp_x1 + 16, rc_y), "RECENT COLORS", fill=self.TEXT_MUTED, font=font_sm)
         rc_y += 18
 
         self._color_centers = []
@@ -537,18 +618,33 @@ class ModernUI:
                 d.ellipse([cx - 11, ccy - 11, cx + 11, ccy + 11],
                           outline=(255, 255, 255), width=2)
 
-        # ── Layers ──────────────────────────────────────────────
-        ly_y = rc_y + (len(self.PALETTE_COLORS) // color_cols + 1) * color_spacing + 8
-        d.text((rp_x1 + 16, ly_y), "LAYERS", fill=self.TEXT_DIM, font=font_sm)
-        d.text((rp_x2 - 24, ly_y), "+", fill=self.ACCENT, font=font_lg)
-        ly_y += 20
+        # ── Canvas Background Selector ──────────────────────────
+        bg_section_y = rc_y + (len(self.PALETTE_COLORS) // color_cols + 1) * color_spacing + 8
+        d.text((rp_x1 + 16, bg_section_y), "CANVAS BACKGROUND", fill=self.TEXT_MUTED, font=font_sm)
+        bg_section_y += 20
 
-        layer_names = ["Layer 1", "Background"]
-        for i, lname in enumerate(layer_names):
-            ly = ly_y + i * 26
-            bg = (25, 25, 40) if i == 0 else self.PANEL
-            d.rounded_rectangle([rp_x1 + 8, ly, rp_x2 - 8, ly + 22], radius=6, fill=bg)
-            d.text((rp_x1 + 32, ly + 4), lname, fill=self.TEXT_PRIMARY if i == 0 else self.TEXT_DIM, font=font_sm)
+        self._bg_mode_rects = []
+        bg_modes = [
+            ("webcam", "Live Webcam", "Camera Feed"),
+            ("whiteboard", "Whiteboard", "Solid Canvas"),
+        ]
+        for i, (bkey, btitle, bdesc) in enumerate(bg_modes):
+            by = bg_section_y + i * 36
+            is_active_bg = (getattr(self, "bg_mode", "webcam") == bkey)
+            self._bg_mode_rects.append((rp_x1 + 8, by, rp_x2 - 8, by + 30, bkey))
+
+            if is_active_bg:
+                d.rounded_rectangle([rp_x1 + 8, by, rp_x2 - 8, by + 30],
+                                    radius=6, fill=self.ACCENT, outline=self.ACCENT_GLOW)
+                d.ellipse([rp_x1 + 16, by + 10, rp_x1 + 26, by + 20], fill=(255, 255, 255))
+                d.text((rp_x1 + 34, by + 4), btitle, fill=(255, 255, 255), font=font_sm)
+                d.text((rp_x1 + 34, by + 17), bdesc, fill=(220, 200, 255), font=font_xs)
+            else:
+                d.rounded_rectangle([rp_x1 + 8, by, rp_x2 - 8, by + 30],
+                                    radius=6, fill=(24, 24, 38), outline=self.PANEL_BORDER)
+                d.ellipse([rp_x1 + 16, by + 10, rp_x1 + 26, by + 20], outline=self.TEXT_MUTED)
+                d.text((rp_x1 + 34, by + 4), btitle, fill=self.TEXT_SECONDARY, font=font_sm)
+                d.text((rp_x1 + 34, by + 17), bdesc, fill=self.TEXT_DIM, font=font_xs)
 
         # ── Bottom Bar ──────────────────────────────────────────
         bb_y1 = self.height - self.bottom_h - self.pad
@@ -556,51 +652,82 @@ class ModernUI:
         d.rounded_rectangle([self.pad, bb_y1, self.width - self.pad, bb_y2],
                             radius=r, fill=self.PANEL, outline=self.PANEL_BORDER)
 
-        # Canvas size
-        d.text((self.pad + 16, bb_y1 + 10), "CANVAS", fill=self.TEXT_DIM, font=font_sm)
-        d.rounded_rectangle([self.pad + 70, bb_y1 + 8, self.pad + 170, bb_y1 + 28],
+        # Canvas size & quick background toggle
+        d.text((self.pad + 16, bb_y1 + 10), "CANVAS", fill=self.TEXT_MUTED, font=font_sm)
+        d.rounded_rectangle([self.pad + 72, bb_y1 + 8, self.pad + 162, bb_y1 + 28],
                             radius=6, fill=(22, 22, 36), outline=self.PANEL_BORDER)
-        d.text((self.pad + 78, bb_y1 + 11), f"{self.video_width} x {self.video_height}",
+        d.text((self.pad + 78, bb_y1 + 11), f"{self.video_width}x{self.video_height}",
                fill=self.TEXT_PRIMARY, font=font_sm)
 
-        # Action buttons
-        actions = [("Clear", "C"), ("Undo", "U"), ("Redo", "R")]
-        act_start = self.width // 2 - 150
+        # Quick background mode toggle button in bottom bar
+        bg_btn_x1 = self.pad + 170
+        bg_btn_x2 = self.pad + 268
+        curr_bg = getattr(self, "bg_mode", "webcam")
+        bg_btn_lbl = "BG: Webcam" if curr_bg == "webcam" else "BG: Board"
+        target_toggle = "whiteboard" if curr_bg == "webcam" else "webcam"
+        self._bg_mode_rects.append((bg_btn_x1, bb_y1 + 8, bg_btn_x2, bb_y1 + 28, target_toggle))
+        d.rounded_rectangle([bg_btn_x1, bb_y1 + 8, bg_btn_x2, bb_y1 + 28],
+                            radius=6, fill=(26, 26, 42), outline=self.ACCENT_DIM)
+        d.text((bg_btn_x1 + 8, bb_y1 + 11), bg_btn_lbl, fill=self.ACCENT_GLOW, font=font_sm)
+
+        # Action buttons: Undo, Redo, Clear
+        act_start = self.width // 2 - 170
         self._action_rects = []
-        for j, (label, key) in enumerate(actions):
-            ax = act_start + j * 75
-            ay = bb_y1 + 6
-            self._action_rects.append((ax, ay, ax + 60, ay + 36, label.upper()))
-            d.rounded_rectangle([ax, ay, ax + 60, ay + 36], radius=10,
-                                fill=(22, 22, 36), outline=self.PANEL_BORDER)
-            d.text((ax + 22, ay + 4), key, fill=self.TEXT_PRIMARY, font=font_lg)
-            d.text((ax + 10, ay + 22), label, fill=self.TEXT_DIM, font=font_sm)
 
-        # Tracking indicator
-        tk_x = self.width // 2 + 90
+        # Undo button
+        ax = act_start
+        ay = bb_y1 + 6
+        self._action_rects.append((ax, ay, ax + 72, ay + 38, "UNDO"))
+        d.rounded_rectangle([ax, ay, ax + 72, ay + 38], radius=8,
+                            fill=(28, 28, 44), outline=(55, 55, 80))
+        d.text((ax + 18, ay + 4), "Undo", fill=self.TEXT_PRIMARY, font=font_md)
+        d.text((ax + 17, ay + 21), "Ctrl+Z", fill=self.TEXT_MUTED, font=font_sm)
+
+        # Redo button
+        ax += 80
+        self._action_rects.append((ax, ay, ax + 72, ay + 38, "REDO"))
+        d.rounded_rectangle([ax, ay, ax + 72, ay + 38], radius=8,
+                            fill=(28, 28, 44), outline=(55, 55, 80))
+        d.text((ax + 18, ay + 4), "Redo", fill=self.TEXT_PRIMARY, font=font_md)
+        d.text((ax + 17, ay + 21), "Ctrl+Y", fill=self.TEXT_MUTED, font=font_sm)
+
+        # Clear button (distinct coral red warning styling)
+        ax += 80
+        self._action_rects.append((ax, ay, ax + 72, ay + 38, "CLEAR"))
+        d.rounded_rectangle([ax, ay, ax + 72, ay + 38], radius=8,
+                            fill=(38, 22, 28), outline=(95, 45, 55))
+        d.text((ax + 18, ay + 4), "Clear", fill=(255, 125, 125), font=font_md)
+        d.text((ax + 18, ay + 21), "Key C", fill=(200, 110, 110), font=font_sm)
+
+        # Tracking indicator anchor
+        tk_x = act_start + 265
         tk_cy = (bb_y1 + bb_y2) // 2
-        d.ellipse([tk_x - 18, tk_cy - 18, tk_x + 18, tk_cy + 18],
-                  fill=self.ACCENT_DIM, outline=self.ACCENT, width=2)
-        d.text((tk_x - 16, tk_cy + 20), "Tracking", fill=self.ACCENT, font=font_sm)
+        self._tk_pos = (tk_x, tk_cy)
 
-        # Save / Export
-        for j, label in enumerate(["Save", "Export"]):
-            ax = tk_x + 50 + j * 75
-            ay = bb_y1 + 6
-            self._action_rects.append((ax, ay, ax + 60, ay + 36, label.upper()))
-            d.rounded_rectangle([ax, ay, ax + 60, ay + 36], radius=10,
-                                fill=(22, 22, 36), outline=self.PANEL_BORDER)
-            d.text((ax + 10, ay + 4), label[0], fill=self.TEXT_PRIMARY, font=font_lg)
-            d.text((ax + 8, ay + 22), label, fill=self.TEXT_DIM, font=font_sm)
+        # Save & Export buttons
+        ax = tk_x + 130
+        # Save button
+        self._action_rects.append((ax, ay, ax + 74, ay + 38, "SAVE"))
+        d.rounded_rectangle([ax, ay, ax + 74, ay + 38], radius=8,
+                            fill=(22, 38, 28), outline=(45, 85, 55))
+        d.text((ax + 16, ay + 4), "Save", fill=(130, 240, 160), font=font_md)
+        d.text((ax + 8, ay + 21), "White (S)", fill=(100, 180, 120), font=font_sm)
+
+        # Export button
+        ax += 82
+        self._action_rects.append((ax, ay, ax + 74, ay + 38, "EXPORT"))
+        d.rounded_rectangle([ax, ay, ax + 74, ay + 38], radius=8,
+                            fill=(24, 32, 48), outline=(50, 70, 105))
+        d.text((ax + 12, ay + 4), "Export", fill=(140, 210, 255), font=font_md)
+        d.text((ax + 8, ay + 21), "Alpha (X)", fill=(100, 150, 195), font=font_sm)
 
         # Zoom
-        zoom_x = self.width - self.pad - 190
-        d.text((zoom_x, bb_y1 + 14), "ZOOM", fill=self.TEXT_DIM, font=font_sm)
-        d.rounded_rectangle([zoom_x + 50, bb_y1 + 14, zoom_x + 120, bb_y1 + 26],
+        zoom_x = self.width - self.pad - 180
+        d.text((zoom_x, bb_y1 + 14), "ZOOM", fill=self.TEXT_MUTED, font=font_sm)
+        d.rounded_rectangle([zoom_x + 46, bb_y1 + 14, zoom_x + 110, bb_y1 + 26],
                             radius=4, fill=self.PANEL_BORDER)
-        # Zoom thumb
-        d.ellipse([zoom_x + 82, bb_y1 + 12, zoom_x + 92, bb_y1 + 28], fill=self.ACCENT)
-        d.text((zoom_x + 130, bb_y1 + 14), "100%", fill=self.TEXT_PRIMARY, font=font_sm)
+        d.ellipse([zoom_x + 72, bb_y1 + 12, zoom_x + 82, bb_y1 + 28], fill=self.ACCENT)
+        d.text((zoom_x + 118, bb_y1 + 14), "100%", fill=self.TEXT_PRIMARY, font=font_sm)
 
         # ── Convert to OpenCV BGR and overlay generated assets ──
         base_np = np.array(img)
@@ -673,12 +800,17 @@ class ModernUI:
         # Resize frames to display size
         disp_frame = cv2.resize(frame, (self.disp_w, self.disp_h))
 
-        # Draw hand landmarks on the display frame
-        if landmarks:
-            self._draw_hand_landmarks(disp_frame, landmarks,
-                                      self.disp_w, self.disp_h)
+        # Select background layer (live webcam or solid studio whiteboard)
+        if getattr(self, "bg_mode", "webcam") == "whiteboard":
+            disp_bg = np.full((self.disp_h, self.disp_w, 3), 250, dtype=np.uint8)
+        else:
+            disp_bg = disp_frame.copy()
 
-        # Resize canvas and merge with camera
+        # Draw hand landmarks on the background layer
+        if landmarks:
+            self._draw_hand_landmarks(disp_bg, landmarks, self.disp_w, self.disp_h)
+
+        # Resize canvas and merge with background
         if (canvas_frame.shape[1] != self.disp_w or
                 canvas_frame.shape[0] != self.disp_h):
             disp_canvas = cv2.resize(canvas_frame, (self.disp_w, self.disp_h))
@@ -687,48 +819,73 @@ class ModernUI:
 
         if canvas_mask is not None:
             if (canvas_mask.shape[1] != self.disp_w or canvas_mask.shape[0] != self.disp_h):
-                mask = cv2.resize(canvas_mask, (self.disp_w, self.disp_h), interpolation=cv2.INTER_NEAREST)
+                mask = cv2.resize(canvas_mask, (self.disp_w, self.disp_h), interpolation=cv2.INTER_LINEAR)
             else:
                 mask = canvas_mask
         else:
             gray = cv2.cvtColor(disp_canvas, cv2.COLOR_BGR2GRAY)
             _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
 
-        mask_inv = cv2.bitwise_not(mask)
+        # Smooth alpha blend of canvas drawing over background layer
+        alpha = (mask.astype(np.float32) / 255.0)[:, :, np.newaxis]
+        merged = np.clip(
+            disp_canvas.astype(np.float32) * alpha + disp_bg.astype(np.float32) * (1.0 - alpha),
+            0, 255
+        ).astype(np.uint8)
 
-        frame_bg = cv2.bitwise_and(disp_frame, disp_frame, mask=mask_inv)
-        canvas_fg = cv2.bitwise_and(disp_canvas, disp_canvas, mask=mask)
-        merged = cv2.add(frame_bg, canvas_fg)
-
-        # Apply rounded corners
+        # Apply rounded corners to fit inside the workspace panel
         vx, vy = self.video_x, self.video_y
         bg_region = ui[vy:vy + self.disp_h, vx:vx + self.disp_w]
-        mask_inv_r = cv2.bitwise_not(self._rounded_mask)
-        bg_corners = cv2.bitwise_and(bg_region, bg_region, mask=mask_inv_r)
-        merged_rounded = cv2.bitwise_and(merged, merged, mask=self._rounded_mask)
-        combined = cv2.add(bg_corners, merged_rounded)
+        corner_alpha = (self._rounded_mask.astype(np.float32) / 255.0)[:, :, np.newaxis]
+        combined = np.clip(
+            merged.astype(np.float32) * corner_alpha + bg_region.astype(np.float32) * (1.0 - corner_alpha),
+            0, 255
+        ).astype(np.uint8)
         ui[vy:vy + self.disp_h, vx:vx + self.disp_w] = combined
 
-        # Thin border around camera region
+        # Thin border around workspace region
         cv2.rectangle(ui, (vx - 1, vy - 1),
                       (vx + self.disp_w, vy + self.disp_h),
                       self.PANEL_BORDER, 1)
 
-        # ── LIVE badge ──────────────────────────────────────────
-        badge_x, badge_y = vx + 10, vy + 10
-        cv2.rectangle(ui, (badge_x, badge_y), (badge_x + 58, badge_y + 22),
-                      (15, 40, 15), cv2.FILLED)
-        cv2.rectangle(ui, (badge_x, badge_y), (badge_x + 58, badge_y + 22),
-                      (30, 80, 30), 1)
-        cv2.circle(ui, (badge_x + 12, badge_y + 11), 4,
-                   self.LIVE_GREEN, cv2.FILLED, cv2.LINE_AA)
-        cv2.putText(ui, "LIVE", (badge_x + 22, badge_y + 17),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, self.LIVE_GREEN, 1, cv2.LINE_AA)
+        # ── Viewport Tracking Badge (Top-Left) ───────────────────
+        badge_x, badge_y = vx + 12, vy + 12
+        if landmarks:
+            # Active tracking (Emerald Green)
+            cv2.rectangle(ui, (badge_x, badge_y), (badge_x + 130, badge_y + 24),
+                          (15, 42, 20), cv2.FILLED)
+            cv2.rectangle(ui, (badge_x, badge_y), (badge_x + 130, badge_y + 24),
+                          (40, 130, 60), 1)
+            cv2.circle(ui, (badge_x + 12, badge_y + 12), 4,
+                       self.LIVE_GREEN, cv2.FILLED, cv2.LINE_AA)
+            cv2.putText(ui, "TRACKING: ON", (badge_x + 22, badge_y + 17),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, self.LIVE_GREEN, 1, cv2.LINE_AA)
+        else:
+            # Tracking lost / searching (Muted Amber/Red - NEVER GREEN)
+            cv2.rectangle(ui, (badge_x, badge_y), (badge_x + 145, badge_y + 24),
+                          (35, 22, 16), cv2.FILLED)
+            cv2.rectangle(ui, (badge_x, badge_y), (badge_x + 145, badge_y + 24),
+                          (70, 45, 170), 1)
+            cv2.circle(ui, (badge_x + 12, badge_y + 12), 4,
+                       (70, 70, 220), 1, cv2.LINE_AA)
+            cv2.putText(ui, "TRACKING: LOST", (badge_x + 22, badge_y + 17),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (80, 140, 240), 1, cv2.LINE_AA)
 
-        # Hand tracking status
-        if gesture != "NONE":
-            cv2.putText(ui, "Hand Tracking Active", (badge_x + 66, badge_y + 17),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, self.TEXT_SECONDARY, 1, cv2.LINE_AA)
+        # ── Viewport Active Mode Badge (Top-Right) ──────────────
+        mode_names = [
+            "DRAW [BRUSH]" if self.active_tool == 0 else "DRAW [ERASER]",
+            "SELECT",
+            "SMART INK",
+            "MOVE",
+        ]
+        active_mode_str = mode_names[self.active_mode] if self.active_mode < len(mode_names) else "DRAW"
+        mb_w = len(active_mode_str) * 8 + 24
+        mb_x = vx + self.disp_w - mb_w - 12
+        mb_y = vy + 12
+        cv2.rectangle(ui, (mb_x, mb_y), (mb_x + mb_w, mb_y + 24), (20, 20, 32), cv2.FILLED)
+        cv2.rectangle(ui, (mb_x, mb_y), (mb_x + mb_w, mb_y + 24), self.PANEL_BORDER, 1)
+        cv2.putText(ui, active_mode_str, (mb_x + 10, mb_y + 17),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, self.ACCENT_GLOW, 1, cv2.LINE_AA)
 
         # ── Gesture Guide overlay ───────────────────────────────
         guide_h = 48
@@ -743,7 +900,7 @@ class ModernUI:
             cv2.addWeighted(dark, 0.78, ov_region, 0.22, 0, dst=ov_region)
 
             cv2.putText(ui, "GESTURE GUIDE", (guide_x + 8, guide_y + 13),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, self.TEXT_DIM, 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, self.TEXT_MUTED, 1, cv2.LINE_AA)
 
             item_w = guide_w // len(self.GESTURE_GUIDE)
             for i, (gname, gdesc) in enumerate(self.GESTURE_GUIDE):
@@ -758,7 +915,7 @@ class ModernUI:
                 cv2.putText(ui, gname, (ix, guide_y + 28),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.32, col, 1, cv2.LINE_AA)
                 cv2.putText(ui, gdesc, (ix, guide_y + 42),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.28, self.TEXT_DIM, 1, cv2.LINE_AA)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.28, self.TEXT_MUTED, 1, cv2.LINE_AA)
 
         # ── Cursor ──────────────────────────────────────────────
         if cursor_x > 0 and cursor_y > 0:
@@ -801,5 +958,22 @@ class ModernUI:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.38, self.TEXT_PRIMARY, 1, cv2.LINE_AA)
             cv2.putText(ui, f"Tracking: {stats.get('tracking', 'Active')}", (dx, dy + 48),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.38, self.ACCENT_GLOW, 1, cv2.LINE_AA)
+
+        # ── Dynamic Tracking Indicator on Bottom Bar ───────────
+        tk_x, tk_cy = getattr(self, '_tk_pos', (self.width // 2 + 95, self.height - 30))
+        if landmarks:
+            # Active tracking: Glowing green ring and solid core
+            cv2.circle(ui, (tk_x, tk_cy), 12, (20, 50, 25), cv2.FILLED, cv2.LINE_AA)
+            cv2.circle(ui, (tk_x, tk_cy), 12, self.LIVE_GREEN, 2, cv2.LINE_AA)
+            cv2.circle(ui, (tk_x, tk_cy), 4, self.LIVE_GREEN, cv2.FILLED, cv2.LINE_AA)
+            cv2.putText(ui, "Tracking: Active", (tk_x + 18, tk_cy + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.36, self.LIVE_GREEN, 1, cv2.LINE_AA)
+        else:
+            # Tracking lost / searching: Muted amber/red indicator - NEVER GREEN
+            cv2.circle(ui, (tk_x, tk_cy), 12, (25, 20, 20), cv2.FILLED, cv2.LINE_AA)
+            cv2.circle(ui, (tk_x, tk_cy), 12, (50, 50, 160), 2, cv2.LINE_AA)
+            cv2.circle(ui, (tk_x, tk_cy), 3, (60, 60, 180), cv2.FILLED, cv2.LINE_AA)
+            cv2.putText(ui, "Tracking: Lost", (tk_x + 18, tk_cy + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.36, (70, 110, 200), 1, cv2.LINE_AA)
 
         return ui

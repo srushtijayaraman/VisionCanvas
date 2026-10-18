@@ -30,3 +30,15 @@ def test_brush_thickness_and_color_propagation():
     brush = HardBrush(color=(0, 255, 128), thickness=14)
     assert brush.color == (0, 255, 128)
     assert brush.thickness == 14
+
+
+def test_brush_opacity_propagation():
+    """Brushes should store their assigned opacity and defaults."""
+    hard = HardBrush()
+    pencil = PencilBrush()
+    water = WatercolorBrush()
+    soft = SoftBrush()
+    assert hard.opacity == 1.0
+    assert pencil.opacity == 0.6
+    assert water.opacity == 0.4
+    assert soft.opacity == 0.85

@@ -132,6 +132,97 @@ def test_circles(recognizer, center, radius):
     assert len(res.refined_points) > 10
 
 
+def test_circle_non_uniform_drawing_velocity(recognizer):
+    """Circle with spatial point clustering from uneven drawing speed must be recognized."""
+    center = (250, 250)
+    radius = 75
+    pts = []
+    # 25 points in first 90 degrees (slow quadrant)
+    for i in range(25):
+        deg = (i / 25) * 90.0
+        rad = math.radians(deg)
+        pts.append((int(center[0] + radius * math.cos(rad)), int(center[1] + radius * math.sin(rad))))
+    # 25 points in remaining 270 degrees (fast sweep)
+    for i in range(25):
+        deg = 90.0 + (i / 25) * 260.0
+        rad = math.radians(deg)
+        pts.append((int(center[0] + radius * math.cos(rad)), int(center[1] + radius * math.sin(rad))))
+
+    res = recognizer.recognize(pts)
+    assert res.is_recognized is True
+    assert res.shape_type == "CIRCLE"
+    assert res.confidence >= 0.80
+    assert len(res.refined_points) == 36
+
+
+def test_circle_with_overlap(recognizer):
+    """Circle stroke that overshoots/overlaps (e.g. 390 deg) must be recognized as a circle."""
+    center = (300, 300)
+    radius = 65
+    pts = []
+    for i in range(50):
+        deg = (i / 45) * 360.0  # Sweeps up to ~400 deg
+        rad = math.radians(deg)
+        pts.append((int(center[0] + radius * math.cos(rad)), int(center[1] + radius * math.sin(rad))))
+
+    res = recognizer.recognize(pts)
+    assert res.is_recognized is True
+    assert res.shape_type == "CIRCLE"
+    assert res.confidence >= 0.80
+
+
+def test_circle_hand_tremor_and_jitter(recognizer):
+    """Hand-drawn circle with webcam jitter and uneven speed must be recognized."""
+    random.seed(42)
+    center = (280, 280)
+    radius = 70
+    pts = []
+    for i in range(15):
+        deg = (i / 15) * 60.0
+        r = radius + random.uniform(-4, 4)
+        pts.append((int(center[0] + r * math.cos(math.radians(deg))), int(center[1] + r * math.sin(math.radians(deg)))))
+    for i in range(25):
+        deg = 60.0 + (i / 25) * 285.0
+        r = radius + random.uniform(-4, 4)
+        pts.append((int(center[0] + r * math.cos(math.radians(deg))), int(center[1] + r * math.sin(math.radians(deg)))))
+
+    res = recognizer.recognize(pts)
+    assert res.is_recognized is True
+    assert res.shape_type == "CIRCLE"
+    assert res.confidence >= 0.75
+
+
+def test_open_c_shape_rejected_as_circle(recognizer):
+    """An open C-shape (270 deg) must NOT be recognized as a circle or polygon."""
+    pts = []
+    for deg in range(45, 315, 6):
+        rad = math.radians(deg)
+        pts.append((int(200 + 80 * math.cos(rad)), int(200 + 80 * math.sin(rad))))
+
+    res = recognizer.recognize(pts)
+    assert res.shape_type != "CIRCLE"
+    assert res.shape_type != "RECTANGLE"
+    assert res.is_recognized is False
+
+
+def test_square_not_misidentified_as_circle(recognizer):
+    """A clean square must be recognized as RECTANGLE, never as CIRCLE."""
+    pts = []
+    for x in range(100, 301, 10):
+        pts.append((x, 100))
+    for y in range(100, 301, 10):
+        pts.append((300, y))
+    for x in range(300, 99, -10):
+        pts.append((x, 300))
+    for y in range(300, 99, -10):
+        pts.append((100, y))
+
+    res = recognizer.recognize(pts)
+    assert res.is_recognized is True
+    assert res.shape_type == "RECTANGLE"
+    assert res.shape_type != "CIRCLE"
+
+
 def test_rectangle_unequal_sides(recognizer):
     pts = make_rectangle((100, 100), width=240, height=120, pts_per_side=15, noise_mag=2.0)
     res = recognizer.recognize(pts)
@@ -212,3 +303,27 @@ def test_recognition_performance_timing(recognizer):
 
     avg_ms = sum(times) / len(times)
     assert avg_ms < 5.0, f"Average recognition time {avg_ms:.2f}ms exceeds 5ms limit!"
+
+
+def test_arrow_recognition(recognizer):
+    """An open stroke with a dominant shaft and acute arrowhead should be recognized as ARROW."""
+    pts = []
+    # Shaft: (50, 100) -> (250, 100)
+    for x in range(50, 255, 10):
+        pts.append((x, 100))
+    # Barb 1: (250, 100) -> (210, 70)
+    for t in range(1, 6):
+        pts.append((int(250 - t * 8), int(100 - t * 6)))
+    # Return to tip and draw Barb 2: (210, 70) -> (250, 100) -> (210, 130)
+    for t in range(1, 6):
+        pts.append((int(210 + t * 8), int(70 + t * 6)))
+    for t in range(1, 6):
+        pts.append((int(250 - t * 8), int(100 + t * 6)))
+
+    res = recognizer.recognize(pts)
+    assert res.is_recognized
+    assert res.shape_type == "ARROW"
+    assert len(res.refined_points) == 4
+    shaft_start, tip, barb1, barb2 = res.refined_points
+    assert abs(shaft_start[0] - 50) <= 15
+    assert abs(tip[0] - 250) <= 15

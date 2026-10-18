@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from src.brushes.hard_brush import HardBrush
+from src.brushes.pencil_brush import PencilBrush
 from src.canvas.drawing_canvas import DrawingCanvas
 
 
@@ -100,6 +101,54 @@ def test_canvas_clear_and_undo_clear():
     assert canvas.mask[30, 30] == 255
 
 
+def test_canvas_undo_redo_clear_cycle_and_new_stroke_branching():
+    """Verify drawing, undoing, redoing, clearing, undoing a clear, and new stroke branching."""
+    brush = HardBrush(color=(255, 0, 0), thickness=6)
+    canvas = DrawingCanvas(width=100, height=100, brush=brush)
+
+    # 1. Draw Stroke 1
+    canvas.draw((10, 10))
+    canvas.reset_stroke()
+    assert np.count_nonzero(canvas.canvas) > 0
+    s1_count = np.count_nonzero(canvas.canvas)
+    assert len(canvas.undo_stack) == 2
+    assert len(canvas.redo_stack) == 0
+
+    # 2. Undo Stroke 1
+    assert canvas.undo() is True
+    assert np.count_nonzero(canvas.canvas) == 0
+    assert len(canvas.redo_stack) == 1
+
+    # 3. Redo Stroke 1
+    assert canvas.redo() is True
+    assert np.count_nonzero(canvas.canvas) == s1_count
+    assert len(canvas.redo_stack) == 0
+
+    # 4. Clear canvas
+    canvas.clear()
+    assert np.count_nonzero(canvas.canvas) == 0
+    assert len(canvas.redo_stack) == 0
+    assert len(canvas.undo_stack) == 3
+
+    # 5. Undo Clear (restores Stroke 1)
+    assert canvas.undo() is True
+    assert np.count_nonzero(canvas.canvas) == s1_count
+    assert len(canvas.redo_stack) == 1
+
+    # 6. Draw Stroke 2 (drawing a new stroke after undo must invalidate redo_stack)
+    brush.color = (0, 255, 0)
+    canvas.draw((50, 50))
+    canvas.reset_stroke()
+    assert len(canvas.redo_stack) == 0
+    assert canvas.canvas[50, 50, 1] == 255
+    assert np.count_nonzero(canvas.canvas) > s1_count
+
+    # 7. Undo Stroke 2 (reverts back to Stroke 1)
+    assert canvas.undo() is True
+    assert canvas.canvas[50, 50, 1] == 0
+    assert np.count_nonzero(canvas.canvas) == s1_count
+
+
 def test_canvas_dark_marks_preservation():
     """Black strokes (e.g. pencil / eraser / dark charcoal) must have positive alpha mask."""
     dark_brush = HardBrush(color=(0, 0, 0), thickness=8)
@@ -133,3 +182,26 @@ def test_canvas_export(temp_output_dir):
     assert ok2 is True
     assert os.path.exists(trans_file)
     assert os.path.getsize(trans_file) > 100
+
+
+def test_canvas_draw_arrow():
+    """DrawingCanvas should render an ARROW shape correctly and make it undoable."""
+    brush = HardBrush(color=(255, 0, 0), thickness=6)
+    canvas = DrawingCanvas(width=200, height=200, brush=brush)
+    points = [(20, 100), (150, 100), (120, 80), (120, 120)]
+    canvas.draw_shape("ARROW", points)
+    assert np.count_nonzero(canvas.canvas) > 0
+    assert np.count_nonzero(canvas.mask) > 0
+    # Undo removes the entire arrow
+    assert canvas.undo() is True
+    assert np.count_nonzero(canvas.canvas) == 0
+
+
+def test_canvas_opacity_mask_propagation():
+    """Drawing with PencilBrush should stamp the mask with fractional opacity."""
+    pencil = PencilBrush(color=(0, 0, 255), thickness=6)
+    canvas = DrawingCanvas(width=100, height=100, brush=pencil)
+    canvas.draw((50, 50))
+    canvas.reset_stroke()
+    expected_mask = int(round(255 * 0.6))
+    assert canvas.mask[50, 50] == expected_mask

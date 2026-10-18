@@ -10,6 +10,9 @@ class SoftBrush(BaseBrush):
     process a small region around the stroke segment.
     """
 
+    def __init__(self, color=(255, 0, 255), thickness=8, opacity=0.85):
+        super().__init__(color=color, thickness=thickness, opacity=opacity)
+
     def stroke(self, canvas, p1, p2):
         margin = self.thickness + 20  # extra room for the blur kernel
         h, w = canvas.shape[:2]

@@ -5,6 +5,7 @@ Recognizes hand-drawn strokes as clean geometric primitives:
 - RECTANGLE
 - CIRCLE
 - TRIANGLE
+- ARROW
 
 Pipeline:
 1. Point collection & deduplication.
@@ -131,10 +132,11 @@ class GeometryRecognizer:
             line_res.original_points = list(points)
             return line_res
 
-        # Closed shape candidates require approximate closure (closure_ratio < 0.40 or start near end)
-        if closure_ratio < 0.45 or d_start_end < max(35.0, 0.25 * bb_diag):
+        # Closed shape candidates require approximate closure (closed within 22% perimeter or small endpoint gap)
+        is_closed = (closure_ratio <= 0.22) or (d_start_end <= max(35.0, 0.22 * bb_diag) and closure_ratio <= 0.28)
+        if is_closed:
             # Candidate B: Circle
-            circle_res = self._fit_circle(clean_pts, np_pts, bb_w, bb_h, aspect_ratio, total_length)
+            circle_res = self._fit_circle(clean_pts, np_pts, bb_w, bb_h, aspect_ratio, total_length, d_start_end, bb_diag)
             if circle_res and circle_res.confidence >= self.min_confidence:
                 circle_res.features = features
                 circle_res.original_points = list(points)
@@ -146,6 +148,14 @@ class GeometryRecognizer:
                 poly_res.features = features
                 poly_res.original_points = list(points)
                 return poly_res
+
+        # Candidate D: Arrow (Open stroke with straight shaft and acute arrowhead)
+        if closure_ratio >= 0.35:
+            arrow_res = self._fit_arrow(clean_pts, np_pts, total_length, d_start_end)
+            if arrow_res and arrow_res.confidence >= self.min_confidence:
+                arrow_res.features = features
+                arrow_res.original_points = list(points)
+                return arrow_res
 
         # Fallback: Ambiguous / low-confidence stroke
         return ShapeRecognitionResult(
@@ -208,6 +218,160 @@ class GeometryRecognizer:
             )
         return None
 
+    def _fit_arrow(
+        self,
+        clean_pts: List[Tuple[float, float]],
+        np_pts: np.ndarray,
+        total_length: float,
+        d_start_end: float,
+    ) -> Optional[ShapeRecognitionResult]:
+        """Fit a directional arrow composed of a straight shaft and acute arrowhead."""
+        if len(clean_pts) < 6 or total_length < 35.0:
+            return None
+
+        int_pts = np.array(clean_pts, dtype=np.int32).reshape((-1, 1, 2))
+
+        # Test polygon approximations to find shaft + arrowhead structure
+        for eps_factor in [0.035, 0.05, 0.025]:
+            epsilon = eps_factor * cv2.arcLength(int_pts, False)
+            approx = cv2.approxPolyDP(int_pts, epsilon, False)
+            if len(approx) < 3 or len(approx) > 7:
+                continue
+
+            verts = [p[0] for p in approx]
+            num_v = len(verts)
+
+            # Calculate edge lengths between consecutive simplified vertices
+            edge_lens = [
+                math.hypot(verts[i + 1][0] - verts[i][0], verts[i + 1][1] - verts[i][1])
+                for i in range(num_v - 1)
+            ]
+            if not edge_lens:
+                continue
+
+            max_idx = int(np.argmax(edge_lens))
+            max_edge = edge_lens[max_idx]
+
+            # The shaft must be dominant (at least 45% of total edge sum and >= 25 px)
+            sum_edges = sum(edge_lens)
+            if max_edge < 25.0 or (max_edge / sum_edges) < 0.45:
+                continue
+
+            # Determine tail and tip:
+            # Case 1: Shaft is the first edge (verts[0] -> verts[1])
+            if max_idx == 0:
+                tail = (float(verts[0][0]), float(verts[0][1]))
+                tip = (float(verts[1][0]), float(verts[1][1]))
+                head_verts = verts[1:]
+            # Case 2: Shaft is the last edge (verts[-2] -> verts[-1])
+            elif max_idx == num_v - 2:
+                tail = (float(verts[-1][0]), float(verts[-1][1]))
+                tip = (float(verts[-2][0]), float(verts[-2][1]))
+                head_verts = verts[:-1]
+            else:
+                continue
+
+            # Check that head vertices stay close to the tip (within 50% of shaft length)
+            shaft_len = math.hypot(tip[0] - tail[0], tip[1] - tail[1])
+            if shaft_len < 20.0:
+                continue
+
+            head_dists = [math.hypot(hv[0] - tip[0], hv[1] - tip[1]) for hv in head_verts]
+            if any(hd > 0.50 * shaft_len for hd in head_dists):
+                continue
+
+            # Check directional alignment of arrowhead: barbs should point back along the shaft
+            dx = tip[0] - tail[0]
+            dy = tip[1] - tail[1]
+            back_dx = -dx / shaft_len
+            back_dy = -dy / shaft_len
+
+            # Check if at least one head vector points back towards the tail
+            valid_barb = False
+            for hv in head_verts:
+                h_dx = hv[0] - tip[0]
+                h_dy = hv[1] - tip[1]
+                h_len = math.hypot(h_dx, h_dy)
+                if h_len > 4.0:
+                    dot = (h_dx * back_dx + h_dy * back_dy) / h_len
+                    if dot > 0.15:  # Angle with reverse shaft is acute (< 81 deg)
+                        valid_barb = True
+                        break
+
+            if not valid_barb:
+                continue
+
+            # Generate clean symmetric arrow geometry
+            angle = math.atan2(dy, dx)
+            barb_len = max(10.0, min(40.0, shaft_len * 0.25))
+            barb1 = (
+                int(round(tip[0] - barb_len * math.cos(angle - math.radians(30)))),
+                int(round(tip[1] - barb_len * math.sin(angle - math.radians(30)))),
+            )
+            barb2 = (
+                int(round(tip[0] - barb_len * math.cos(angle + math.radians(30)))),
+                int(round(tip[1] - barb_len * math.sin(angle + math.radians(30)))),
+            )
+            refined = [
+                (int(round(tail[0])), int(round(tail[1]))),
+                (int(round(tip[0])), int(round(tip[1]))),
+                barb1,
+                barb2,
+            ]
+            confidence = max(0.65, min(0.95, 0.60 + 0.35 * (max_edge / sum_edges)))
+            return ShapeRecognitionResult(
+                shape_type="ARROW",
+                refined_points=refined,
+                confidence=confidence,
+                is_recognized=True,
+                rejection_reason=None,
+            )
+
+        return None
+
+    @staticmethod
+    def _resample_polyline(pts: np.ndarray, num_samples: int = 64) -> np.ndarray:
+        """Resample a 2D polyline into equidistant points along its arc-length.
+
+        Decouples point density from drawing speed / frame duration variations.
+        """
+        diffs = pts[1:] - pts[:-1]
+        seg_lens = np.hypot(diffs[:, 0], diffs[:, 1])
+        cum_lens = np.insert(np.cumsum(seg_lens), 0, 0.0)
+        total_len = float(cum_lens[-1])
+        if total_len < 1e-4:
+            return pts
+        sample_dists = np.linspace(0.0, total_len, num_samples)
+        resampled = np.zeros((num_samples, 2), dtype=np.float32)
+        resampled[:, 0] = np.interp(sample_dists, cum_lens, pts[:, 0])
+        resampled[:, 1] = np.interp(sample_dists, cum_lens, pts[:, 1])
+        return resampled
+
+    @staticmethod
+    def _fit_circle_kasa(pts: np.ndarray) -> Optional[Tuple[float, float, float]]:
+        """Fit circle to 2D points using linear least-squares (Kasa algebraic method).
+
+        Solves: (x - xc)^2 + (y - yc)^2 = R^2
+        Returns (xc, yc, R) or None if degenerate.
+        """
+        if len(pts) < 3:
+            return None
+        x = pts[:, 0]
+        y = pts[:, 1]
+        A = np.column_stack([2.0 * x, 2.0 * y, np.ones(len(x), dtype=np.float32)])
+        b = x**2 + y**2
+        try:
+            sol, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+            xc = float(sol[0])
+            yc = float(sol[1])
+            K = float(sol[2])
+            val = K + xc**2 + yc**2
+            if val <= 0.0:
+                return None
+            return xc, yc, math.sqrt(val)
+        except Exception:
+            return None
+
     def _fit_circle(
         self,
         clean_pts: List[Tuple[float, float]],
@@ -216,33 +380,82 @@ class GeometryRecognizer:
         bb_h: float,
         aspect_ratio: float,
         total_length: float,
+        d_start_end: float,
+        bb_diag: float,
     ) -> Optional[ShapeRecognitionResult]:
-        """Fit a circle using algebraic centroid and evaluate radial variance."""
+        """Fit a circle using least-squares algebraic circle fitting and geometric validation.
+
+        Validates:
+        1. Aspect ratio: bounding box approximately square (0.65 to 1.55).
+        2. Arc-length resampling: uniform spatial sampling independent of drawing speed.
+        3. Kasa algebraic circle fit: accurate geometric center and radius.
+        4. Closure and circumference consistency: start-to-end distance and perimeter ratio.
+        5. Radial consistency: low standard deviation and low peak deviation from mean radius.
+        6. Angular sweep & quadrant coverage: continuous angular sweep covering all 4 quadrants.
+        """
         # Circle must have roughly 1:1 bounding box
-        if not (0.60 <= aspect_ratio <= 1.65):
+        if not (0.65 <= aspect_ratio <= 1.55):
             return None
 
-        center_x = float(np.mean(np_pts[:, 0]))
-        center_y = float(np.mean(np_pts[:, 1]))
+        # 1. Resample along arc-length to eliminate hand-velocity clustering
+        resampled = self._resample_polyline(np_pts, num_samples=64)
 
-        # Calculate radius for all points
-        radii = np.hypot(np_pts[:, 0] - center_x, np_pts[:, 1] - center_y)
+        # 2. Algebraic least-squares circle fitting (Kasa method)
+        fit = self._fit_circle_kasa(resampled)
+        if not fit:
+            return None
+        center_x, center_y, fitted_r = fit
+
+        if fitted_r < 8.0:
+            return None
+
+        # 3. Radial variance & standard deviation
+        radii = np.hypot(resampled[:, 0] - center_x, resampled[:, 1] - center_y)
         r_mean = float(np.mean(radii))
-
-        if r_mean < 8.0:
-            return None
-
-        # Radial variance & standard deviation
         r_std = float(np.std(radii))
         rel_std = r_std / r_mean
+        max_dev = float(np.max(np.abs(radii - r_mean)) / r_mean)
 
-        # Expected circumference vs actual arc length
+        # 4. Circumference vs actual arc length
         circ = 2.0 * math.pi * r_mean
         length_ratio = total_length / circ
 
-        # Circles should have low radial variance and arc length near 2*pi*R (between 0.75 and 1.45)
-        if rel_std < 0.20 and 0.70 <= length_ratio <= 1.55:
-            confidence = max(0.0, min(1.0, 1.0 - 2.8 * rel_std))
+        # 5. Continuous angular sweep around fitted center
+        angles = np.arctan2(resampled[:, 1] - center_y, resampled[:, 0] - center_x)
+        d_theta = np.diff(angles)
+        d_theta = (d_theta + np.pi) % (2.0 * np.pi) - np.pi
+        total_sweep = abs(float(np.sum(d_theta)))
+
+        # 6. Quadrant coverage: all 4 quadrants relative to center must have points
+        dx = resampled[:, 0] - center_x
+        dy = resampled[:, 1] - center_y
+        all_quadrants = bool(
+            np.any((dx >= 0) & (dy >= 0))
+            and np.any((dx < 0) & (dy >= 0))
+            and np.any((dx < 0) & (dy < 0))
+            and np.any((dx >= 0) & (dy < 0))
+        )
+
+        if not all_quadrants:
+            return None
+
+        # Angular sweep must cover ~300 deg up to ~520 deg (allows slight closure gap or modest overlap)
+        if not (5.20 <= total_sweep <= 9.20):
+            return None
+
+        # Circumference ratio must be between 0.72 and 1.50
+        if not (0.72 <= length_ratio <= 1.50):
+            return None
+
+        # Closure check: start and end points must be reasonably close
+        if d_start_end > max(35.0, 0.30 * bb_diag) and (d_start_end / total_length) > 0.28:
+            return None
+
+        # Radial variance & peak deviation:
+        # Squares have rel_std ~ 0.112 and max_dev ~ 0.218
+        # Hand-drawn circles (even noisy) have rel_std <= 0.088 and max_dev <= 0.185
+        if rel_std <= 0.088 and max_dev <= 0.185:
+            confidence = max(0.65, min(0.98, 1.0 - 3.6 * rel_std))
 
             # Discretize clean circle into a 36-point polygon
             num_samples = 36
@@ -308,6 +521,12 @@ class GeometryRecognizer:
                 bb_area = max(1.0, bb_w * bb_h)
 
                 if cv2.isContourConvex(approx) and area > 0.45 * bb_area:
+                    # Rectangles have straight sides with circularity <= 0.80; circles have circularity > 0.82
+                    perim = max(1.0, cv2.arcLength(approx, True))
+                    circularity = 4.0 * math.pi * area / (perim * perim)
+                    if circularity > 0.82:
+                        continue
+
                     angles = self._compute_interior_angles(rect_pts)
                     # Rectangles have corner angles near 90 degrees (60-120 deg)
                     if all(55.0 <= a <= 125.0 for a in angles):
