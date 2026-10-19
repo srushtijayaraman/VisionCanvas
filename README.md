@@ -284,15 +284,6 @@ To report bugs or suggest enhancements, please use our [Issue Templates](.github
 
 ---
 
-## 📜 Acknowledgements & Attribution
-
-- **Original Project:** Based on the foundational VisionCanvas project created by [Shashwat2506](https://github.com/Shashwat2506/VisionCanvas).
-- **Maintenance & Architecture Polish:** Forked, stabilized, tested, and maintained by [srushtijayaraman](https://github.com/srushtijayaraman).
-- **Hand Tracking Model:** MediaPipe HandLandmarker provided by Google LLC under the Apache 2.0 License.
-- **Signal Filtering Algorithm:** 1€ Filter designed by Géry Casiez, Nicolas Roussel, and Daniel Vogel (*CHI 2012*).
-
----
-
 ## 📄 License
 
 *Upstream licensing pending confirmation.*
